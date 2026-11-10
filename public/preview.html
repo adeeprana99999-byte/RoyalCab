@@ -47,10 +47,12 @@
     const form = document.querySelector('form');
     const submit = form.querySelector('button');
     const status = document.querySelector('#status');
+    const role = new URLSearchParams(location.search).get('demo');
+    const workspaceUrl = ['owner', 'driver', 'customer'].includes(role) ? '/?demo=' + role : '/';
 
     async function signIn(credentials, failure) {
       submit.disabled = true;
-      status.textContent = '';
+      status.textContent = credentials.token ? 'Opening the demo…' : '';
       try {
         const response = await fetch(form.action, {
           method: 'POST',
@@ -58,13 +60,14 @@
           body: JSON.stringify(credentials),
         });
         if (response.ok) {
-          location.replace('/');
+          location.replace(workspaceUrl);
           return;
         }
         status.textContent = response.status === 429 ? 'Too many attempts. Try again in a minute.' : failure;
       } catch {
         status.textContent = 'Could not connect. Please try again.';
       }
+      form.hidden = false;
       submit.disabled = false;
     }
 
@@ -75,7 +78,8 @@
 
     const token = location.hash.slice(1);
     if (token) {
-      history.replaceState(null, '', '/preview');
+      history.replaceState(null, '', location.pathname + location.search);
+      form.hidden = true;
       signIn({ token }, 'This invite could not be opened. Sign in or ask for a new test link.');
     }
   </script>

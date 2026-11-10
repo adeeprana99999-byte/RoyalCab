@@ -17,6 +17,7 @@ let schedulePeriod='priority', schedulePage=1, scheduleSearch='';
 let reportGroup='driver',reportData=null,reportFrom='',reportTo='',settingsDirty=false,reportLoading=false,reportRequestId=0;
 let boardPage = 1, tripDataScope = 'all', bookingOrder = 'next';
 let user, config, state, tab = 'overview', loginTab = 'owner', stream, connected = false, search = '', filter = 'all', batch, loginPhone = '', loginName = '', codeSent = false;
+const demoLoginRole = new URLSearchParams(location.search).get('demo');
 let connectionMode='connecting', connectionTimer, fallbackRequest, lastStreamUpdate=0, lastSnapshotAt=0, requestFreshGps;
 const STREAM_STALE_MS=22000, RECOVERY_INTERVAL_MS=4000;
 const active = t => !['completed', 'cancelled'].includes(t.status);
@@ -191,19 +192,25 @@ function loginContent() {
     '<button class="btn primary full">Sign in</button></form>';
   if (loginTab === 'owner') return `<div class="workspace-card">${icon('grid')}<h3>Your fleet command center</h3><p>Manage planned trips, dispatch drivers, and see your fleet in one view.</p></div><button class="btn primary full" id="owner-login">Open owner dashboard ${icon('arrow')}</button><p class="help">Demo access only. Production requires individual owner accounts and MFA.</p>`;
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
-  return `<form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form>`;
+  return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
 async function enter(u) {stopConnection();state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? 'overview' : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 function bindLogin() {
   document.querySelectorAll('[data-login-tab]').forEach(el => el.onclick = () => { loginTab = el.dataset.loginTab; codeSent = false; renderLogin(); });
   if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'owner' })).user));
   if ($('#driver-login')) $('#driver-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'driver', driverId: $('#driver-choice').value })).user));
+  if ($('#demo-customer-login')) $('#demo-customer-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'customer' })).user));
   if ($('#customer-login')) $('#customer-login').onsubmit = e => { e.preventDefault(); run(async () => {
     loginPhone = $('#customer-phone').value.trim(); loginName = $('#customer-name').value.trim();
     if (codeSent) return enter((await api('/api/auth/verify', { phone: loginPhone, name: loginName, code: $('#sms-code').value })).user);
     const result = await api('/api/auth/request-code', { phone: loginPhone }); codeSent = true; renderLogin(); $('#sms-hint').textContent = `DEMO code: ${result.demoCode} · No SMS was sent.`; $('#sms-code').focus();
   }); };
-  if ($('#resend')) $('#resend').onclick = () => { codeSent = false; renderLogin(); };
+  if ($('#resend')) $('#resend').onclick = () => {
+    codeSent = false;
+    renderLogin();
+    $('#customer-login').closest('details').open = true;
+    $('#customer-phone').focus();
+  };
   if ($('#pilot-login')) $('#pilot-login').onsubmit = event => {
     event.preventDefault();
     const fields = new FormData(event.currentTarget);
@@ -821,6 +828,7 @@ function simpleTripTable(trips) {
   }).join('') + '</tbody></table></div>';
 }
 function importsPage() {
+  if (config.publicDemo) return heading('PLANNED RIDES', 'Try the sample rides.', 'The public demo uses built-in test data. File uploads are available in the local demo.');
   return heading('BOOKINGS', 'Import trips', 'Open an LGTC schedule for planning, or import bookings using the ProLift template.', '<a class="btn" href="/api/template">Download Excel template</a>') +
     `<div class="import-grid"><section class="panel upload-panel"><span class="upload-symbol">${icon('upload')}</span><h2>Upload a trip file</h2><p>LGTC CSV or ProLift Excel/CSV · Up to 1,000 trips · Maximum 5 MB</p><label class="file-label">Choose file<input id="import-file" type="file" accept=".xlsx,.csv"></label><p class="help">Upload the LGTC export as received. The local planning copy keeps references, times and stop cities. Keep the original for rider details and instructions.</p><div id="upload-progress" aria-live="polite"></div></section><section class="panel" id="lgtc-history"><h2>Saved LGTC schedules</h2>${lgtcHistoryView()}</section></div>${batch?.kind === 'lgtc' ? lgtcPreview() : batch ? previewImport() : ''}${state.imports.length ? '<section class="panel"><details><summary>Recent ProLift template imports</summary>' + state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details></section>' : ''}`;
 }
@@ -1142,7 +1150,10 @@ function googleFleetFallback() {
   googleFleetProvider = undefined;
   if (user?.role === 'owner' && $('#geo-fleet-map')) bindGeographicMap();
 }
-function phoneTrackingPanel(d){return '<section class="phone-tracking panel"><h2>'+icon('map')+' Share phone location</h2><p>Send this phone’s GPS to the owner while you are online and this browser stays open. Stop sharing at any time. Locked-screen/background tracking is not supported here.</p><div class="tracking-state" id="phone-tracking-state" role="status">'+esc(gpsMessage)+'</div><button class="btn '+(gpsWatch===null?'primary':'')+'" id="phone-location-toggle" '+(d.status==='offline'?'disabled':'')+'>'+(gpsWatch===null?'Start sharing location':'Stop sharing location')+'</button><small>Phone permission is required. '+(config.dispatchMode==='road'?'Fresh phone GPS is required for road dispatch.':'This demo uses simulated pickup times.')+'</small></section>';}
+function phoneTrackingPanel(d){
+  if (config.publicDemo) return '<section class="phone-tracking panel"><h2>'+icon('map')+' Simulated location</h2><p>The owner can follow sample vehicle movement on the dispatch map.</p></section>';
+  return '<section class="phone-tracking panel"><h2>'+icon('map')+' Share phone location</h2><p>Send this phone’s GPS to the owner while you are online and this browser stays open. Stop sharing at any time. Locked-screen/background tracking is not supported here.</p><div class="tracking-state" id="phone-tracking-state" role="status">'+esc(gpsMessage)+'</div><button class="btn '+(gpsWatch===null?'primary':'')+'" id="phone-location-toggle" '+(d.status==='offline'?'disabled':'')+'>'+(gpsWatch===null?'Start sharing location':'Stop sharing location')+'</button><small>Phone permission is required. '+(config.dispatchMode==='road'?'Fresh phone GPS is required for road dispatch.':'This demo uses simulated pickup times.')+'</small></section>';
+}
 function clearPhoneTracking(message) {
   gpsGeneration++;
   if (gpsWatch!==null) navigator.geolocation.clearWatch(gpsWatch);
@@ -1414,7 +1425,8 @@ function bindActions() {
 function bookModal() {
   const dt = new Date(Date.now() + 3600000); dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
   const options = config.places.map(p => `<option>${esc(p.name)}</option>`).join('');
-  modal(`<h2>${user.role==='owner'?'Add a planned ride':'Plan your next trip.'}</h2><p>${config.mode==='pilot'?'Choose verified stops for this ride.':'Choose a demo location. Dispatch will arrange your driver.'}</p><form id="booking-form">${user.role==='owner'?'<label>Customer name<input id="book-customer-name" required maxlength="100"></label><label>Customer mobile<input id="book-customer-phone" type="tel" required placeholder="+15550102001"></label>':''}<label>Pickup<select id="book-pickup">${options}</select></label><label>Destination<select id="book-destination">${options}</select></label><label>Pickup date & time<input id="book-time" type="datetime-local" required value="${dt.toISOString().slice(0, 16)}"></label><p class="help">Time zone: ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}</p><div class="form-grid"><label>Passengers<select id="book-passengers">${[1, 2, 3, 4, 5, 6, 7].map(n => `<option>${n}</option>`).join('')}</select></label><label>Vehicle needs<select id="book-requirements"><option value="">Standard</option><option value="wheelchair">Wheelchair access</option></select></label></div><button class="btn primary full">${user.role==='owner'?'Save planned ride':'Request planned trip'}</button></form>`);
+  const enterCustomer = user.role === 'owner' && !config.publicDemo;
+  modal(`<h2>${user.role==='owner'?'Add a planned ride':'Plan your next trip.'}</h2><p>${config.mode==='pilot'?'Choose verified stops for this ride.':'Choose a demo location. Dispatch will arrange your driver.'}</p><form id="booking-form">${enterCustomer?'<label>Customer name<input id="book-customer-name" required maxlength="100"></label><label>Customer mobile<input id="book-customer-phone" type="tel" required placeholder="+15550102001"></label>':''}<label>Pickup<select id="book-pickup">${options}</select></label><label>Destination<select id="book-destination">${options}</select></label><label>Pickup date & time<input id="book-time" type="datetime-local" required value="${dt.toISOString().slice(0, 16)}"></label><p class="help">Time zone: ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}</p><div class="form-grid"><label>Passengers<select id="book-passengers">${[1, 2, 3, 4, 5, 6, 7].map(n => `<option>${n}</option>`).join('')}</select></label><label>Vehicle needs<select id="book-requirements"><option value="">Standard</option><option value="wheelchair">Wheelchair access</option></select></label></div><button class="btn primary full">${user.role==='owner'?'Save planned ride':'Request planned trip'}</button></form>`);
   $('#book-destination').selectedIndex = 1;
   const bookingKey = crypto.randomUUID();
   $('#booking-form').onsubmit = e => {
@@ -1424,7 +1436,7 @@ function bookModal() {
         pickup: $('#book-pickup').value, destination: $('#book-destination').value,
         pickupAt: new Date($('#book-time').value).toISOString(), passengers: $('#book-passengers').value,
         requirements: $('#book-requirements').value,
-        ...(user.role === 'owner' ? { customerName: $('#book-customer-name').value, customerPhone: $('#book-customer-phone').value } : {})
+        ...(enterCustomer ? { customerName: $('#book-customer-name').value, customerPhone: $('#book-customer-phone').value } : {})
       }, bookingKey);
       $('#modal').close();
       if (user.role === 'customer') selectedCustomerTrip=tripId;
@@ -1434,7 +1446,13 @@ function bookModal() {
     });
   };
 }
-run(async () => { config = await api('/api/config'); user = (await api('/api/session')).user; if (user) await enter(user); else renderLogin(); });
+run(async () => {
+  config = await api('/api/config');
+  if (config.mode === 'demo' && ['owner', 'driver', 'customer'].includes(demoLoginRole)) loginTab = demoLoginRole;
+  user = (await api('/api/session')).user;
+  if (user) await enter(user);
+  else renderLogin();
+});
 
 async function chooseDriver(id){
  const r=await api('/api/trips/'+id+'/dispatch-review'),available=r.candidates.filter(c=>c.eligible);

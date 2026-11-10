@@ -30,9 +30,10 @@ function writeExampleFiles() {
 
 async function start(createApp) {
   const hosted=process.env.PROLIFT_HOSTED_DEMO==='1';
-  const password=hosted?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
-  const invite=hosted?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
-  const app=createApp({dbPath:':memory:',hostedDemoPassword:password,hostedDemoInvite:invite});
+  const publicDemo=hosted&&process.env.PROLIFT_PUBLIC_DEMO==='1';
+  const password=hosted&&!publicDemo?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
+  const invite=hosted&&!publicDemo?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
+  const app=createApp({dbPath:':memory:',hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo});
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
     app.server.once('error',reject);
@@ -40,7 +41,7 @@ async function start(createApp) {
   }).catch(error=>{app.close();throw error;});
   const url='http://localhost:'+app.server.address().port;
   const apiRoot='http://127.0.0.1:'+app.server.address().port;
-  const authorization=hosted?'Basic '+Buffer.from('preview:'+password,'utf8').toString('base64'):null;
+  const authorization=password?'Basic '+Buffer.from('preview:'+password,'utf8').toString('base64'):null;
   let cookie;
   async function post(route, body) {
     const response=await fetch(apiRoot+route,{method:'POST',
@@ -58,7 +59,7 @@ async function start(createApp) {
     await post('/api/demo/tracking-replay',{action:'start'});
     await post('/api/demo/next-ride',{});
     await post('/api/demo/start-trip',{});
-    await post('/api/lgtc/customer',{action:'save',...rider,driverId:'d1'});
+    if (!publicDemo) await post('/api/lgtc/customer',{action:'save',...rider,driverId:'d1'});
     await post('/api/lgtc/settings',{enabled:true,driverIds:['d1','d2'],buffer:10,profiles:{A:{mode:'standard',base:1,extras:[]}}});
     const folder=writeExampleFiles();
     console.log(hosted?'RoyalCab / ProLift hosted demo listening on port '+app.server.address().port:'RoyalCab / ProLift demo '+url);

@@ -21,19 +21,23 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite } = {}) {
-  const hostedDemo=hostedDemoPassword!==undefined;
-  if(hostedDemo&&(typeof hostedDemoPassword!=='string'||hostedDemoPassword.trim().length<24||dbPath!==':memory:'||roadMatrix||pilotConfig)) {
-    throw Error('The hosted demo needs a preview password of at least 24 characters and an in-memory demo database.');
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false } = {}) {
+  const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
+  const privateDemo=hostedDemo&&!publicDemo;
+  if (hostedDemo && (dbPath!==':memory:' || roadMatrix || pilotConfig)) {
+    throw Error('The hosted demo needs an in-memory demo database.');
+  }
+  if (privateDemo && (typeof hostedDemoPassword!=='string' || hostedDemoPassword.trim().length<24)) {
+    throw Error('The hosted demo needs a preview password of at least 24 characters.');
   }
   if (process.env.NODE_ENV === 'production'&&!hostedDemo) throw new Error('Production startup is disabled until secure user accounts and operational imports are configured.');
-  const previewDigest=hostedDemo?crypto.createHash('sha256').update('preview:'+hostedDemoPassword).digest():null;
-  if (hostedDemoInvite !== undefined && (!hostedDemo || !/^[A-Za-z0-9_-]{32,128}$/.test(hostedDemoInvite))) {
+  const previewDigest=privateDemo?crypto.createHash('sha256').update('preview:'+hostedDemoPassword).digest():null;
+  if (hostedDemoInvite !== undefined && (!privateDemo || !/^[A-Za-z0-9_-]{32,128}$/.test(hostedDemoInvite))) {
     throw Error('Set PROLIFT_PREVIEW_INVITE_TOKEN to a random URL-safe token of 32 to 128 characters.');
   }
   const inviteDigest = hostedDemoInvite && crypto.createHash('sha256').update(hostedDemoInvite).digest();
   const previewSessionAge = 43200;
-  const previewPage = hostedDemo ? fs.readFileSync(path.join(__dirname, 'public', 'preview.html'), 'utf8') : null;
+  const previewPage = privateDemo ? fs.readFileSync(path.join(__dirname, 'public', 'preview.html'), 'utf8') : null;
   function previewSignature(expires) {
     return crypto.createHmac('sha256', previewDigest).update(inviteDigest || 'password').update(expires).digest();
   }
@@ -42,7 +46,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     return !!cookie && Number(cookie[1]) > clock() && crypto.timingSafeEqual(Buffer.from(cookie[2], 'hex'), previewSignature(cookie[1]));
   }
   const localMapKey = path.join(__dirname, 'data', 'google-maps-browser.key');
-  const mapKey = (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
+  const mapKey = publicDemo ? '' : (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
     (!hostedDemo && require.main === module && fs.existsSync(localMapKey) ? fs.readFileSync(localMapKey, 'utf8') : '')).trim();
   if (!hostedDemo && require.main === module && process.env.PROLIFT_DISPATCH_MODE === 'road') {
     const routeKey = (process.env.PROLIFT_GOOGLE_ROUTES_KEY || '').trim();
@@ -255,10 +259,14 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     try { return JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { throw new Error('Invalid request data'); }
   }
   function requireRole(user, role) { if (!user || role && user.role !== role) { const e = new Error(user ? 'You do not have access to this action' : 'Please sign in'); e.status = user ? 403 : 401; throw e; } }
+  const publicDemoBlockedWrites = new Set([
+    '/api/import/preview', '/api/import/confirm', '/api/lgtc/schedules', '/api/lgtc/dispatch',
+    '/api/lgtc/customer', '/api/driver/tracking', '/api/driver/location',
+  ]);
   const server = http.createServer(async (req, res) => {
-    if(hostedDemo){
-      if(req.method==='GET'&&req.url==='/healthz') return json(res,200,{ok:true});
-      if (req.method === 'GET' && req.url === '/preview') {
+    if (hostedDemo && req.method==='GET' && req.url==='/healthz') return json(res,200,{ok:true});
+    if (privateDemo) {
+      if (req.method === 'GET' && req.url.split('?')[0] === '/preview') {
         const nonce = crypto.randomBytes(16).toString('base64');
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -320,9 +328,18 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'JSON request required' });
         throttle(`write:${req.socket.remoteAddress}`, 200, 60000);
       }
+      if (publicDemo && req.method === 'GET' && url.pathname === '/preview') {
+        const role = url.searchParams.get('demo');
+        res.writeHead(302, { Location: ['owner','driver','customer'].includes(role) ? '/?demo='+role+'#' : '/#', 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      if (publicDemo && req.method === 'POST' &&
+          (publicDemoBlockedWrites.has(url.pathname) || url.pathname === '/api/support' || url.pathname.startsWith('/api/support/'))) {
+        return json(res, 403, { error: 'The public demo uses sample rides and simulated GPS. Personal data cannot be submitted here.' });
+      }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!pilot||user?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
@@ -347,11 +364,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         const b = await body(req); let u;
         if (b.role === 'owner') u = { role: 'owner', name: 'Fleet owner', id: 'owner-demo' };
         else if (b.role === 'driver') { const d = load().drivers.find(d => d.id === b.driverId); if (!d) throw new Error('Driver not found'); u = { role: 'driver', name: d.name, driverId: d.id }; }
-        else throw new Error('Choose owner or driver');
+        else if (b.role === 'customer') u = { role: 'customer', name: 'Alex Morgan', phone: '+15550102001' };
+        else throw new Error('Choose owner, driver, or customer');
         return json(res, 200, { user: signIn(res, u) });
       }
       if (url.pathname === '/api/auth/request-code' && req.method === 'POST') {
         const b = await body(req); if (!D.phoneValid(b.phone)) throw new Error('Enter a mobile number with country code, such as +15550102001');
+        if (publicDemo && b.phone !== '+15550102001') return json(res, 403, { error: 'Use the sample mobile number in the public demo.' });
         throttle(`sms-ip:${req.socket.remoteAddress}`, 10, 3600000);
         const prev = db.prepare('SELECT sent FROM otp WHERE phone=?').get(b.phone);
         if (prev && clock() - prev.sent < 30000) throw new Error('Wait 30 seconds before requesting another code');
@@ -362,6 +381,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/auth/verify' && req.method === 'POST') {
         const b = await body(req); if (!D.phoneValid(b.phone)) throw new Error('Invalid phone number');
+        if (publicDemo && b.phone !== '+15550102001') return json(res, 403, { error: 'Use the sample mobile number in the public demo.' });
         throttle(`verify:${req.socket.remoteAddress}`, 30, 60000);
         const row = db.prepare('SELECT * FROM otp WHERE phone=?').get(b.phone);
         if (!row || row.expires < clock() || row.attempts >= 5) throw new Error('Code expired or attempt limit reached. Request a new code.');
@@ -772,7 +792,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         const scopedKey = hash(JSON.stringify(user) + ':booking:' + key), fingerprint = hash(JSON.stringify(b));
         const cached = db.prepare('SELECT * FROM requests WHERE key=?').get(scopedKey);
         if (cached) { if (cached.fingerprint !== fingerprint) throw new Error('Request identifier was reused for a different booking'); return json(res, 201, JSON.parse(cached.body)); }
-        const rows = D.validateRows(load(), [{ trip_id: 'PL-' + crypto.randomBytes(3).toString('hex').toUpperCase(), pickup_at: String(b.pickupAt), customer_name: user.role==='owner'?String(b.customerName||'').trim():user.name, customer_phone: user.role==='owner'?String(b.customerPhone||'').trim():user.phone, pickup: b.pickup, destination: b.destination, passengers: String(b.passengers), requirements: b.requirements || '' }], clock());
+        const rider = publicDemo ? { name: 'Alex Morgan', phone: '+15550102001' } :
+          user.role === 'owner' ? { name: String(b.customerName||'').trim(), phone: String(b.customerPhone||'').trim() } : user;
+        const rows = D.validateRows(load(), [{ trip_id: 'PL-' + crypto.randomBytes(3).toString('hex').toUpperCase(), pickup_at: String(b.pickupAt), customer_name: rider.name, customer_phone: rider.phone, pickup: b.pickup, destination: b.destination, passengers: String(b.passengers), requirements: b.requirements || '' }], clock());
         if (rows[0].errors.length) throw new Error(rows[0].errors.join('; '));
         const result = { tripId: rows[0].trip.id };
         mutate(s => { s.trips.push(rows[0].trip); D.event(s, 'trip.booked', rows[0].trip, user.name); db.prepare('INSERT INTO requests VALUES(?,?,?,?)').run(scopedKey, fingerprint, JSON.stringify(result), clock()); }); publish(); return json(res, 201, result);

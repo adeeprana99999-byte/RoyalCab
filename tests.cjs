@@ -656,7 +656,7 @@ test('a preview invite opens the demo without sharing its password', async t => 
   const token = 'synthetic-preview-invite-only-token';
   let now = Date.now();
   const { base } = await harness(t, { hostedDemoPassword: password, hostedDemoInvite: token, clock: () => now });
-  const preview = await fetch(base + '/preview');
+  const preview = await fetch(base + '/preview?demo=customer');
   assert.equal(preview.status, 200);
   assert.doesNotMatch(await preview.text(), new RegExp(token));
   const access = (value, headers = {}) => fetch(base + '/api/preview/access', {
@@ -680,11 +680,49 @@ test('a preview invite opens the demo without sharing its password', async t => 
     body: JSON.stringify({ role: 'owner' }),
   });
   assert.equal(login.status, 200);
+  const customerLogin = await fetch(base + '/api/demo-login', {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'customer', phone: '+15550102002' }),
+  });
+  assert.equal(customerLogin.status, 200);
+  assert.deepEqual((await customerLogin.json()).user, {
+    role: 'customer', name: 'Alex Morgan', phone: '+15550102001',
+  });
+  const customerHeaders = { Cookie: headers.Cookie + '; ' + customerLogin.headers.get('set-cookie').split(';')[0] };
+  const trips = await (await fetch(base + '/api/state', { headers: customerHeaders })).json();
+  assert.ok(trips.state.trips.some(trip => trip.reference === 'PL-1001'));
+  assert.ok(!trips.state.trips.some(trip => trip.reference === 'PL-1002'));
   now += 12 * 3600000;
   assert.equal((await fetch(base, { headers, redirect: 'manual' })).status, 302);
 });
 
 async function driver(c, driverId) { assert.equal((await c('/api/demo-login', { role: 'driver', driverId })).status, 200); }
+
+test('public hosted demo opens the workspace chooser and protects private input paths', async t => {
+  assert.throws(() => createApp({ publicDemo: true }), /in-memory demo database/);
+  const { client, base } = await harness(t, { publicDemo: true });
+  const page = await fetch(base, { redirect: 'manual' });
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('www-authenticate'), null);
+  assert.match(await page.text(), /<script[^>]*src="\/app\.js"/);
+  const tester = client();
+  assert.equal((await tester('/api/config')).data.publicDemo, true);
+  assert.equal((await tester('/api/state')).status, 401);
+  const o = client(), d = client(), c = client();
+  await owner(o);
+  await driver(d, 'd1');
+  assert.equal((await c('/api/demo-login', { role: 'customer' })).data.user.name, 'Alex Morgan');
+  const ownerTrips = (await o('/api/state')).data.state.trips;
+  const customerTrips = (await c('/api/state')).data.state.trips;
+  assert.ok(ownerTrips.some(trip => trip.reference === 'PL-1002'));
+  assert.ok(customerTrips.some(trip => trip.reference === 'PL-1001'));
+  assert.ok(!customerTrips.some(trip => trip.reference === 'PL-1002'));
+  assert.equal((await o('/api/import/preview', {})).status, 403);
+  assert.equal((await d('/api/driver/location', {})).status, 403);
+  assert.equal((await tester('/api/auth/request-code', { phone: '+15550102099' })).status, 403);
+});
+
 async function customer(c, phone = '+15550102001') {
   const code = (await c('/api/auth/request-code', { phone })).data.demoCode;
   const result = await c('/api/auth/verify', { phone, name: 'Test customer', code }); assert.equal(result.status, 200); return code;
