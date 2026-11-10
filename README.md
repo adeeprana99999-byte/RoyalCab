@@ -20,6 +20,14 @@ In the existing Render web service, set the **Start Command** to `node start-dem
 
 Deploy the latest commit and open the Render HTTPS URL. Sign in to the browser prompt as `preview` with the password you set in Render. Every viewer with that password can open the demo owner, driver, and customer roles. Use synthetic records only. The demo stores changes in memory and starts fresh whenever Render restarts the service.
 
+For a one-click testing link, generate a separate random token:
+
+```powershell
+node -p "require('node:crypto').randomBytes(32).toString('base64url')"
+```
+
+Set `PROLIFT_PREVIEW_INVITE_TOKEN` to the generated value in Render and redeploy. Share `https://YOUR-SERVICE.onrender.com/preview#YOUR-INVITE-TOKEN` privately with testers. The link opens the demo without asking for credentials and remembers preview access in that browser for 12 hours. Anyone with the link can use the demo roles. Rotate or remove the token and redeploy to revoke the link and its browser sessions.
+
 ## Included test data
 
 | Example | Where to find it |

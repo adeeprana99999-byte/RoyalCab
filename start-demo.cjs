@@ -32,7 +32,8 @@ function writeExampleFiles() {
 async function start() {
   const hosted=process.env.PROLIFT_HOSTED_DEMO==='1';
   const password=hosted?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
-  const app=createApp({dbPath:':memory:',hostedDemoPassword:password});
+  const invite=hosted?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
+  const app=createApp({dbPath:':memory:',hostedDemoPassword:password,hostedDemoInvite:invite});
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
     app.server.once('error',reject);

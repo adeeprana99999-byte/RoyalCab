@@ -21,13 +21,26 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite } = {}) {
   const hostedDemo=hostedDemoPassword!==undefined;
   if(hostedDemo&&(typeof hostedDemoPassword!=='string'||hostedDemoPassword.trim().length<24||dbPath!==':memory:'||roadMatrix||pilotConfig)) {
     throw Error('The hosted demo needs a preview password of at least 24 characters and an in-memory demo database.');
   }
   if (process.env.NODE_ENV === 'production'&&!hostedDemo) throw new Error('Production startup is disabled until secure user accounts and operational imports are configured.');
   const previewDigest=hostedDemo?crypto.createHash('sha256').update('preview:'+hostedDemoPassword).digest():null;
+  if (hostedDemoInvite !== undefined && (!hostedDemo || !/^[A-Za-z0-9_-]{32,128}$/.test(hostedDemoInvite))) {
+    throw Error('Set PROLIFT_PREVIEW_INVITE_TOKEN to a random URL-safe token of 32 to 128 characters.');
+  }
+  const inviteDigest = hostedDemoInvite && crypto.createHash('sha256').update(hostedDemoInvite).digest();
+  const inviteSessionAge = 43200;
+  function inviteSignature(expires) {
+    return crypto.createHmac('sha256', previewDigest).update(inviteDigest).update(expires).digest();
+  }
+  function hasInviteSession(req) {
+    if (!inviteDigest) return false;
+    const cookie = /(?:^|;\s*)__Host-prolift_preview=(\d{1,16})\.([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '');
+    return !!cookie && Number(cookie[1]) > clock() && crypto.timingSafeEqual(Buffer.from(cookie[2], 'hex'), inviteSignature(cookie[1]));
+  }
   const localMapKey = path.join(__dirname, 'data', 'google-maps-browser.key');
   const mapKey = (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
     (require.main === module && fs.existsSync(localMapKey) ? fs.readFileSync(localMapKey, 'utf8') : '')).trim();
@@ -245,9 +258,58 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   const server = http.createServer(async (req, res) => {
     if(hostedDemo){
       if(req.method==='GET'&&req.url==='/healthz') return json(res,200,{ok:true});
+      if (inviteDigest && req.method === 'GET' && req.url === '/preview') {
+        const nonce = crypto.randomBytes(16).toString('base64');
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`,
+        });
+        return res.end(`<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoyalCab preview</title><main><h1>RoyalCab preview</h1>
+<p role="status">Opening the test app…</p><noscript>Enable JavaScript to open the invite.</noscript></main>
+<script nonce="${nonce}">
+  const status = document.querySelector('[role=status]');
+  const token = location.hash.slice(1);
+  history.replaceState(null, '', '/preview');
+  async function openPreview() {
+    const response = await fetch('/api/preview/access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (!response.ok) throw new Error();
+    location.replace('/');
+  }
+  openPreview().catch(() => { status.textContent = 'This invite could not be opened. Ask the sender for a current test link.'; });
+</script></html>`);
+      }
+      if (inviteDigest && req.method === 'POST' && req.url === '/api/preview/access') {
+        try {
+          if (req.headers['sec-fetch-site'] === 'cross-site' ||
+              (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host)) {
+            return json(res, 403, { error: 'Cross-site requests are not allowed' });
+          }
+          if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'JSON request required' });
+          throttle(`preview-invite:${req.socket.remoteAddress}`, 30, 60000);
+          const { token } = await body(req) || {};
+          if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token) ||
+              !crypto.timingSafeEqual(crypto.createHash('sha256').update(token).digest(), inviteDigest)) {
+            return json(res, 403, { error: 'Invalid preview invite' });
+          }
+          const expires = String(clock() + inviteSessionAge * 1000);
+          res.setHeader('Set-Cookie', `__Host-prolift_preview=${expires}.${inviteSignature(expires).toString('hex')}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${inviteSessionAge}`);
+          return json(res, 200, { ok: true });
+        } catch (error) {
+          return json(res, error.status || 400, { error: error.message });
+        }
+      }
       const encoded=/^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization||'')?.[1];
       const digest=encoded&&crypto.createHash('sha256').update(Buffer.from(encoded,'base64')).digest();
-      if(!digest||!crypto.timingSafeEqual(digest,previewDigest)){
+      if(!hasInviteSession(req)&&(!digest||!crypto.timingSafeEqual(digest,previewDigest))){
         res.setHeader('WWW-Authenticate','Basic realm="RoyalCab preview", charset="UTF-8"');
         return json(res,401,{error:'RoyalCab preview sign-in required'});
       }

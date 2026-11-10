@@ -633,6 +633,39 @@ test('hosted demo protects pages and APIs while allowing the health check', asyn
   })).status, 200);
 });
 
+test('a preview invite opens the demo without sharing its password', async t => {
+  const password = 'synthetic-preview-test-password';
+  const token = 'synthetic-preview-invite-only-token';
+  let now = Date.now();
+  const { base } = await harness(t, { hostedDemoPassword: password, hostedDemoInvite: token, clock: () => now });
+  const preview = await fetch(base + '/preview');
+  assert.equal(preview.status, 200);
+  assert.doesNotMatch(await preview.text(), new RegExp(token));
+  const access = (value, headers = {}) => fetch(base + '/api/preview/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ token: value }),
+  });
+  assert.equal((await access('invalid')).status, 403);
+  assert.equal((await access(token, { Origin: 'https://other.example' })).status, 403);
+  assert.equal((await fetch(base + '/api/config')).status, 401);
+  const granted = await access(token);
+  assert.equal(granted.status, 200);
+  const cookie = granted.headers.get('set-cookie');
+  assert.match(cookie, /^__Host-prolift_preview=.*; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=43200$/);
+  const headers = { Cookie: cookie.split(';')[0] };
+  assert.equal((await fetch(base, { headers })).status, 200);
+  assert.equal((await fetch(base + '/api/config', { headers })).status, 200);
+  const login = await fetch(base + '/api/demo-login', {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'owner' }),
+  });
+  assert.equal(login.status, 200);
+  now += 12 * 3600000;
+  assert.equal((await fetch(base, { headers })).status, 401);
+});
+
 async function driver(c, driverId) { assert.equal((await c('/api/demo-login', { role: 'driver', driverId })).status, 200); }
 async function customer(c, phone = '+15550102001') {
   const code = (await c('/api/auth/request-code', { phone })).data.demoCode;
