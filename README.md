@@ -14,6 +14,12 @@ Open [ProLift on localhost](http://localhost:4720/) and select **Open owner dash
 
 The demo rebuilds its synthetic bookings in memory on each start. It creates fresh import examples for the next day under `demo-generated/`. The `examples/` directory contains fixed-date copies for reference.
 
+## Preview on Render
+
+In the existing Render web service, set the **Start Command** to `node start-demo.cjs` and the **Health Check Path** to `/healthz`. In **Environment**, set `PROLIFT_HOSTED_DEMO=1` and create `PROLIFT_PREVIEW_PASSWORD` with a new random password of at least 24 characters. Keep `NODE_ENV=production` and let Render supply `PORT`.
+
+Deploy the latest commit and open the Render HTTPS URL. Sign in to the browser prompt as `preview` with the password you set in Render. Every viewer with that password can open the demo owner, driver, and customer roles. Use synthetic records only. The demo stores changes in memory and starts fresh whenever Render restarts the service.
+
 ## Included test data
 
 | Example | Where to find it |

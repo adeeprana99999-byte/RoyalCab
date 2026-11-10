@@ -604,6 +604,35 @@ async function harness(t, options = {}) {
   return { ...app, base, client };
 }
 async function owner(c) { assert.equal((await c('/api/demo-login', { role: 'owner' })).status, 200); }
+
+test('hosted demo protects pages and APIs while allowing the health check', async t => {
+  const password = 'synthetic-preview-test-password';
+  assert.throws(() => createApp({ dbPath: ':memory:', hostedDemoPassword: '' }), /preview password/);
+  assert.throws(() => createApp({ hostedDemoPassword: password }), /in-memory demo database/);
+  const { base } = await harness(t, { hostedDemoPassword: password });
+  const authorization = 'Basic ' + Buffer.from('preview:' + password).toString('base64');
+  const health = await fetch(base + '/healthz');
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { ok: true });
+  const page = await fetch(base);
+  assert.equal(page.status, 401);
+  assert.match(page.headers.get('www-authenticate'), /^Basic /);
+  assert.equal((await fetch(base + '/api/config', { headers: { Authorization: 'Basic d3Jvbmc=' } })).status, 401);
+  const login = { method: 'POST', body: JSON.stringify({ role: 'owner' }) };
+  assert.equal((await fetch(base + '/api/demo-login', login)).status, 401);
+  assert.equal((await fetch(base, { headers: { Authorization: authorization } })).status, 200);
+  const response = await fetch(base + '/api/demo-login', {
+    ...login,
+    headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+  });
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get('set-cookie');
+  assert.match(cookie, /; Secure/);
+  assert.equal((await fetch(base + '/api/state', {
+    headers: { Authorization: authorization, Cookie: cookie.split(';')[0] },
+  })).status, 200);
+});
+
 async function driver(c, driverId) { assert.equal((await c('/api/demo-login', { role: 'driver', driverId })).status, 200); }
 async function customer(c, phone = '+15550102001') {
   const code = (await c('/api/auth/request-code', { phone })).data.demoCode;

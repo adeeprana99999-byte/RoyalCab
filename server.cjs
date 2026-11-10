@@ -21,8 +21,13 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig } = {}) {
-  if (process.env.NODE_ENV === 'production') throw new Error('Production startup is disabled until secure user accounts and operational imports are configured.');
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword } = {}) {
+  const hostedDemo=hostedDemoPassword!==undefined;
+  if(hostedDemo&&(typeof hostedDemoPassword!=='string'||hostedDemoPassword.trim().length<24||dbPath!==':memory:'||roadMatrix||pilotConfig)) {
+    throw Error('The hosted demo needs a preview password of at least 24 characters and an in-memory demo database.');
+  }
+  if (process.env.NODE_ENV === 'production'&&!hostedDemo) throw new Error('Production startup is disabled until secure user accounts and operational imports are configured.');
+  const previewDigest=hostedDemo?crypto.createHash('sha256').update('preview:'+hostedDemoPassword).digest():null;
   const localMapKey = path.join(__dirname, 'data', 'google-maps-browser.key');
   const mapKey = (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
     (require.main === module && fs.existsSync(localMapKey) ? fs.readFileSync(localMapKey, 'utf8') : '')).trim();
@@ -220,7 +225,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   function signIn(res, user) {
     const token = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(hash(token), JSON.stringify(user), clock() + 12 * 3600000);
-    res.setHeader('Set-Cookie', `prolift=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${pilot?'; Secure':''}`);
+    res.setHeader('Set-Cookie', `prolift=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${pilot||hostedDemo?'; Secure':''}`);
     return user;
   }
   function throttle(key, max, ms) {
@@ -238,6 +243,15 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   }
   function requireRole(user, role) { if (!user || role && user.role !== role) { const e = new Error(user ? 'You do not have access to this action' : 'Please sign in'); e.status = user ? 403 : 401; throw e; } }
   const server = http.createServer(async (req, res) => {
+    if(hostedDemo){
+      if(req.method==='GET'&&req.url==='/healthz') return json(res,200,{ok:true});
+      const encoded=/^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization||'')?.[1];
+      const digest=encoded&&crypto.createHash('sha256').update(Buffer.from(encoded,'base64')).digest();
+      if(!digest||!crypto.timingSafeEqual(digest,previewDigest)){
+        res.setHeader('WWW-Authenticate','Basic realm="RoyalCab preview", charset="UTF-8"');
+        return json(res,401,{error:'RoyalCab preview sign-in required'});
+      }
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-Frame-Options', 'DENY');
     const nonce = mapKey ? crypto.randomBytes(16).toString('base64') : '';

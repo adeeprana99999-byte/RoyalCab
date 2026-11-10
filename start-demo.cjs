@@ -30,18 +30,21 @@ function writeExampleFiles() {
 }
 
 async function start() {
-  const app=createApp({dbPath:':memory:'});
+  const hosted=process.env.PROLIFT_HOSTED_DEMO==='1';
+  const password=hosted?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
+  const app=createApp({dbPath:':memory:',hostedDemoPassword:password});
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
     app.server.once('error',reject);
-    app.server.listen(port,'127.0.0.1',resolve);
+    app.server.listen(port,hosted?'0.0.0.0':'127.0.0.1',resolve);
   }).catch(error=>{app.close();throw error;});
   const url='http://localhost:'+app.server.address().port;
   const apiRoot='http://127.0.0.1:'+app.server.address().port;
+  const authorization=hosted?'Basic '+Buffer.from('preview:'+password,'utf8').toString('base64'):null;
   let cookie;
   async function post(route, body) {
     const response=await fetch(apiRoot+route,{method:'POST',
-      headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
+      headers:{'Content-Type':'application/json',...(authorization?{Authorization:authorization}:{}),...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
     if(!response.ok) throw Error(route+' failed with HTTP '+response.status);
     if(response.headers.has('set-cookie')) cookie=response.headers.get('set-cookie').split(';')[0];
     return response.json();
@@ -58,7 +61,7 @@ async function start() {
     await post('/api/lgtc/customer',{action:'save',...rider,driverId:'d1'});
     await post('/api/lgtc/settings',{enabled:true,driverIds:['d1','d2'],buffer:10,profiles:{A:{mode:'standard',base:1,extras:[]}}});
     const folder=writeExampleFiles();
-    console.log('RoyalCab / ProLift demo '+url);
+    console.log(hosted?'RoyalCab / ProLift hosted demo listening on port '+app.server.address().port:'RoyalCab / ProLift demo '+url);
     console.log('Demo datasets loaded. Next-day LGTC and Excel files: '+folder);
   } catch(error) {
     app.close();
