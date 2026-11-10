@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in | RoyalCab</title>
+  <style nonce="{{nonce}}">
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh; margin: 0; padding: 24px; display: grid; place-items: center;
+      background: radial-gradient(ellipse at top, #dce9ff, #f4f7fc 65%);
+      color: #132138; font: 16px/1.5 system-ui, sans-serif;
+    }
+    main {
+      width: min(100%, 420px); padding: clamp(24px, 7vw, 40px); background: white;
+      border: 1px solid #dbe4ef; border-radius: 24px; box-shadow: 0 24px 64px #20365d1c;
+    }
+    .brand { margin: 0 0 20px; color: #2451a4; font-weight: 750; }
+    h1 { margin: 0; font-size: 1.85rem; line-height: 1.2; }
+    .intro { margin: 8px 0 24px; color: #475569; }
+    label { display: block; margin-bottom: 4px; font-weight: 650; }
+    input, button { width: 100%; min-height: 46px; border-radius: 10px; font: inherit; }
+    input { margin-bottom: 16px; padding: 8px 12px; border: 1px solid #8293aa; }
+    button { border: 0; background: #234ea1; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .7; cursor: wait; }
+    :focus-visible { outline: 3px solid #4174d2; outline-offset: 3px; }
+    #status { color: #982f2f; margin: 12px 0 0; }
+    #status:empty { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="brand">RoyalCab · Test preview</p>
+    <h1>Sign in</h1>
+    <p class="intro">Use your test credentials to open the owner, driver, and customer demo.</p>
+    <form action="/api/preview/access" method="post">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" value="preview" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+    <p id="status" role="status"></p>
+    <noscript>Enable JavaScript to sign in to the preview.</noscript>
+  </main>
+  <script nonce="{{nonce}}">
+    const form = document.querySelector('form');
+    const submit = form.querySelector('button');
+    const status = document.querySelector('#status');
+
+    async function signIn(credentials, failure) {
+      submit.disabled = true;
+      status.textContent = '';
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(credentials),
+        });
+        if (response.ok) {
+          location.replace('/');
+          return;
+        }
+        status.textContent = response.status === 429 ? 'Too many attempts. Try again in a minute.' : failure;
+      } catch {
+        status.textContent = 'Could not connect. Please try again.';
+      }
+      submit.disabled = false;
+    }
+
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      signIn(Object.fromEntries(new FormData(form)), 'Check your username and password.');
+    });
+
+    const token = location.hash.slice(1);
+    if (token) {
+      history.replaceState(null, '', '/preview');
+      signIn({ token }, 'This invite could not be opened. Sign in or ask for a new test link.');
+    }
+  </script>
+</body>
+</html>

@@ -32,14 +32,14 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     throw Error('Set PROLIFT_PREVIEW_INVITE_TOKEN to a random URL-safe token of 32 to 128 characters.');
   }
   const inviteDigest = hostedDemoInvite && crypto.createHash('sha256').update(hostedDemoInvite).digest();
-  const inviteSessionAge = 43200;
-  function inviteSignature(expires) {
-    return crypto.createHmac('sha256', previewDigest).update(inviteDigest).update(expires).digest();
+  const previewSessionAge = 43200;
+  const previewPage = hostedDemo ? fs.readFileSync(path.join(__dirname, 'public', 'preview.html'), 'utf8') : null;
+  function previewSignature(expires) {
+    return crypto.createHmac('sha256', previewDigest).update(inviteDigest || 'password').update(expires).digest();
   }
-  function hasInviteSession(req) {
-    if (!inviteDigest) return false;
+  function hasPreviewSession(req) {
     const cookie = /(?:^|;\s*)__Host-prolift_preview=(\d{1,16})\.([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '');
-    return !!cookie && Number(cookie[1]) > clock() && crypto.timingSafeEqual(Buffer.from(cookie[2], 'hex'), inviteSignature(cookie[1]));
+    return !!cookie && Number(cookie[1]) > clock() && crypto.timingSafeEqual(Buffer.from(cookie[2], 'hex'), previewSignature(cookie[1]));
   }
   const localMapKey = path.join(__dirname, 'data', 'google-maps-browser.key');
   const mapKey = (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
@@ -258,50 +258,37 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   const server = http.createServer(async (req, res) => {
     if(hostedDemo){
       if(req.method==='GET'&&req.url==='/healthz') return json(res,200,{ok:true});
-      if (inviteDigest && req.method === 'GET' && req.url === '/preview') {
+      if (req.method === 'GET' && req.url === '/preview') {
         const nonce = crypto.randomBytes(16).toString('base64');
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-store',
           'Referrer-Policy': 'no-referrer',
           'X-Content-Type-Options': 'nosniff',
-          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`,
+          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
         });
-        return res.end(`<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RoyalCab preview</title><main><h1>RoyalCab preview</h1>
-<p role="status">Opening the test app…</p><noscript>Enable JavaScript to open the invite.</noscript></main>
-<script nonce="${nonce}">
-  const status = document.querySelector('[role=status]');
-  const token = location.hash.slice(1);
-  history.replaceState(null, '', '/preview');
-  async function openPreview() {
-    const response = await fetch('/api/preview/access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
-    });
-    if (!response.ok) throw new Error();
-    location.replace('/');
-  }
-  openPreview().catch(() => { status.textContent = 'This invite could not be opened. Ask the sender for a current test link.'; });
-</script></html>`);
+        return res.end(previewPage.replaceAll('{{nonce}}', nonce));
       }
-      if (inviteDigest && req.method === 'POST' && req.url === '/api/preview/access') {
+      if (req.method === 'POST' && req.url === '/api/preview/access') {
         try {
           if (req.headers['sec-fetch-site'] === 'cross-site' ||
               (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host)) {
             return json(res, 403, { error: 'Cross-site requests are not allowed' });
           }
           if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'JSON request required' });
-          throttle(`preview-invite:${req.socket.remoteAddress}`, 30, 60000);
-          const { token } = await body(req) || {};
-          if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token) ||
-              !crypto.timingSafeEqual(crypto.createHash('sha256').update(token).digest(), inviteDigest)) {
-            return json(res, 403, { error: 'Invalid preview invite' });
+          throttle(`preview-access:${req.socket.remoteAddress}`, 30, 60000);
+          const { token, username, password } = await body(req) || {};
+          const usingInvite = token !== undefined;
+          const valid = usingInvite
+            ? inviteDigest && typeof token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(token) &&
+              crypto.timingSafeEqual(crypto.createHash('sha256').update(token).digest(), inviteDigest)
+            : username === 'preview' && typeof password === 'string' &&
+              crypto.timingSafeEqual(crypto.createHash('sha256').update('preview:' + password).digest(), previewDigest);
+          if (!valid) {
+            return json(res, 403, { error: usingInvite ? 'Invalid preview invite' : 'Check your username and password.' });
           }
-          const expires = String(clock() + inviteSessionAge * 1000);
-          res.setHeader('Set-Cookie', `__Host-prolift_preview=${expires}.${inviteSignature(expires).toString('hex')}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${inviteSessionAge}`);
+          const expires = String(clock() + previewSessionAge * 1000);
+          res.setHeader('Set-Cookie', `__Host-prolift_preview=${expires}.${previewSignature(expires).toString('hex')}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${previewSessionAge}`);
           return json(res, 200, { ok: true });
         } catch (error) {
           return json(res, error.status || 400, { error: error.message });
@@ -309,8 +296,11 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       const encoded=/^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization||'')?.[1];
       const digest=encoded&&crypto.createHash('sha256').update(Buffer.from(encoded,'base64')).digest();
-      if(!hasInviteSession(req)&&(!digest||!crypto.timingSafeEqual(digest,previewDigest))){
-        res.setHeader('WWW-Authenticate','Basic realm="RoyalCab preview", charset="UTF-8"');
+      if(!hasPreviewSession(req)&&(!digest||!crypto.timingSafeEqual(digest,previewDigest))){
+        if (req.method === 'GET' && req.url.split('?')[0] === '/') {
+          res.writeHead(302, { Location: '/preview', 'Cache-Control': 'no-store' });
+          return res.end();
+        }
         return json(res,401,{error:'RoyalCab preview sign-in required'});
       }
     }

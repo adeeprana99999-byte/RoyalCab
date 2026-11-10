@@ -18,7 +18,7 @@ The demo rebuilds its synthetic bookings in memory on each start. It creates fre
 
 In the existing Render web service, use `node start-demo.cjs` or `yarn start` as the **Start Command** and set the **Health Check Path** to `/healthz`. In **Environment**, set `PROLIFT_HOSTED_DEMO=1` and create `PROLIFT_PREVIEW_PASSWORD` with a new random password of at least 24 characters. Keep `NODE_ENV=production` and let Render supply `PORT`.
 
-Deploy the latest commit and open the Render HTTPS URL. Sign in to the browser prompt as `preview` with the password you set in Render. Every viewer with that password can open the demo owner, driver, and customer roles. Use synthetic records only. The demo stores changes in memory and starts fresh whenever Render restarts the service.
+Deploy the latest commit and open the Render HTTPS URL. Sign in on the RoyalCab page as `preview` with the password you set in Render. Every viewer with that password can open the demo owner, driver, and customer roles. Use synthetic records only. The demo stores changes in memory and starts fresh whenever Render restarts the service.
 
 For a one-click testing link, generate a separate random token:
 

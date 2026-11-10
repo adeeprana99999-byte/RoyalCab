@@ -614,9 +614,27 @@ test('hosted demo protects pages and APIs while allowing the health check', asyn
   const health = await fetch(base + '/healthz');
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { ok: true });
+  const redirect = await fetch(base, { redirect: 'manual' });
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get('location'), '/preview');
+  assert.equal(redirect.headers.get('www-authenticate'), null);
   const page = await fetch(base);
-  assert.equal(page.status, 401);
-  assert.match(page.headers.get('www-authenticate'), /^Basic /);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /autocomplete="username"/);
+  assert.match(html, /autocomplete="current-password"/);
+  assert.ok(!html.includes(password));
+  const previewLogin = password => fetch(base + '/api/preview/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'preview', password }),
+  });
+  assert.equal((await previewLogin('wrong')).status, 403);
+  const previewAccess = await previewLogin(password);
+  assert.equal(previewAccess.status, 200);
+  const previewCookie = previewAccess.headers.get('set-cookie');
+  assert.match(previewCookie, /; HttpOnly; Secure;/);
+  assert.equal((await fetch(base + '/api/config', { headers: { Cookie: previewCookie.split(';')[0] } })).status, 200);
   assert.equal((await fetch(base + '/api/config', { headers: { Authorization: 'Basic d3Jvbmc=' } })).status, 401);
   const login = { method: 'POST', body: JSON.stringify({ role: 'owner' }) };
   assert.equal((await fetch(base + '/api/demo-login', login)).status, 401);
@@ -663,7 +681,7 @@ test('a preview invite opens the demo without sharing its password', async t => 
   });
   assert.equal(login.status, 200);
   now += 12 * 3600000;
-  assert.equal((await fetch(base, { headers })).status, 401);
+  assert.equal((await fetch(base, { headers, redirect: 'manual' })).status, 302);
 });
 
 async function driver(c, driverId) { assert.equal((await c('/api/demo-login', { role: 'driver', driverId })).status, 200); }
