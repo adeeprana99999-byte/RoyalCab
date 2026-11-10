@@ -1,0 +1,14 @@
+{
+  "name": "prolift",
+  "version": "0.22.0",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.cjs",
+    "demo": "node start-demo.cjs",
+    "test": "node --test tests.cjs",
+    "check": "node --check server.cjs && node --check domain.cjs && node --check operations.cjs && node --check demo.cjs && node --check excel.cjs && node --check lgtc.cjs && node --check public/lgtc-view.js && node --check public/app.js && node --check public/board.js && node --check public/map-camera.js && node --check reservations.cjs && node --check ride-service.cjs && node --check location.cjs && node --check dispatch-review.cjs && node --check public/rider-view.js && node --check tracking-replay.cjs && node --check public/ride-explanation.js && node --check charlotte-fleet.cjs && node --check vehicle-planner.cjs && node --check shared-planner.cjs && node --check volume-demo.cjs"
+  }
+}
