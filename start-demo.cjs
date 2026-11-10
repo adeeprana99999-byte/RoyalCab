@@ -1,6 +1,5 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { createApp } = require('./server.cjs');
 const { spots } = require('./charlotte-fleet.cjs');
 const { workbook } = require('./excel.cjs');
 const { easternPickup } = require('./lgtc.cjs');
@@ -29,7 +28,7 @@ function writeExampleFiles() {
   return folder;
 }
 
-async function start() {
+async function start(createApp) {
   const hosted=process.env.PROLIFT_HOSTED_DEMO==='1';
   const password=hosted?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
   const invite=hosted?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
@@ -76,4 +75,12 @@ async function start() {
     app.server.close(()=>process.exit());
   });
 }
-start().catch(error=>{console.error(error.message);process.exitCode=1;});
+function startDemo(createApp) {
+  return start(createApp).catch(error => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
+if (require.main === module) startDemo(require('./server.cjs').createApp);
+module.exports = { startDemo };

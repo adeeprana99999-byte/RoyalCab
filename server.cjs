@@ -43,8 +43,8 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   }
   const localMapKey = path.join(__dirname, 'data', 'google-maps-browser.key');
   const mapKey = (process.env.PROLIFT_GOOGLE_MAPS_BROWSER_KEY ||
-    (require.main === module && fs.existsSync(localMapKey) ? fs.readFileSync(localMapKey, 'utf8') : '')).trim();
-  if (require.main === module && process.env.PROLIFT_DISPATCH_MODE === 'road') {
+    (!hostedDemo && require.main === module && fs.existsSync(localMapKey) ? fs.readFileSync(localMapKey, 'utf8') : '')).trim();
+  if (!hostedDemo && require.main === module && process.env.PROLIFT_DISPATCH_MODE === 'road') {
     const routeKey = (process.env.PROLIFT_GOOGLE_ROUTES_KEY || '').trim();
     if (routeKey && routeKey === mapKey) throw Error('Use a separate server key for Google Routes.');
     roadMatrix = Road.googleMatrix(routeKey);
@@ -865,7 +865,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   }
   return { server, close, load, mutate };
 }
-if (require.main === module) {
+if (require.main === module && process.env.PROLIFT_HOSTED_DEMO === '1') {
+  require('./start-demo.cjs').startDemo(createApp);
+} else if (require.main === module) {
   const roadPilot=process.env.PROLIFT_DISPATCH_MODE==='road';
   const app = createApp(roadPilot ? {dbPath:path.join(__dirname,'data','prolift-road-pilot.sqlite')} : undefined), port = Number(process.env.PORT || 4720);
   app.server.listen(port, '127.0.0.1', () => {
