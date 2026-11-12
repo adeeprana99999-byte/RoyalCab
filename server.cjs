@@ -21,9 +21,10 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile } = {}) {
   const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
   const privateDemo=hostedDemo&&!publicDemo;
+  if (sheetFile && (hostedDemo || pilotConfig || roadMatrix || !dbPath)) throw Error('Sheet testing requires a separate local database.');
   if (hostedDemo && (dbPath!==':memory:' || roadMatrix || pilotConfig)) {
     throw Error('The hosted demo needs an in-memory demo database.');
   }
@@ -74,6 +75,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user TEXT NOT NULL,expires INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS otp(phone TEXT PRIMARY KEY,code TEXT NOT NULL,expires INTEGER NOT NULL,attempts INTEGER NOT NULL,sent INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL);');
   const initial = D.seed(clock(),initialSettings);
+  if (sheetFile) Object.assign(initial,{trips:[],customers:[]});
   if (pilot) Object.assign(initial,{drivers:pilot.drivers,trips:[],customers:[]});
   db.prepare('INSERT OR IGNORE INTO state(id,body) VALUES(1,?)').run(JSON.stringify(initial));
   if (pilot) {
@@ -99,6 +101,57 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   db.prepare('INSERT OR IGNORE INTO lgtc_identity_secret VALUES(1,?)').run(crypto.randomBytes(32).toString('hex'));
   const lgtcSecret = db.prepare('SELECT secret FROM lgtc_identity_secret WHERE id=1').get().secret;
   const lgtcKey = value => crypto.createHmac('sha256', lgtcSecret).update(value).digest('hex');
+  let readSheetDetails, compareRiderHistory;
+  function saveSheetDetails(batch) {
+    const write = db.prepare('INSERT OR REPLACE INTO lgtc_sheet_legs VALUES(?,?,?,?,?,?,?,?)');
+    const normalize = value => value.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    for (const row of batch.rows) {
+      const source = batch.dispatchSource[row.row - 1];
+      const details = { name:source.name, phone:source.phone, pickupAddress:source.pickupAddress,
+        destinationAddress:source.destinationAddress, instructions:source.instructions, sourceFields:source.sourceFields };
+      const routeKey = source.pickup && source.destination && row.from && row.to
+        ? JSON.stringify([source.pickupAddress.map(normalize), source.destinationAddress.map(normalize)]) : null;
+      write.run(batch.id,row.row,batch.sourceStamp,row.customerKey,row.serviceDate,row.reference,routeKey,JSON.stringify(details));
+    }
+  }
+  if (sheetFile) {
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS lgtc_sheet_legs(
+        schedule_id TEXT NOT NULL, source_row INTEGER NOT NULL, source_stamp TEXT NOT NULL,
+        rider_key TEXT, service_date TEXT NOT NULL, reference TEXT NOT NULL, route_key TEXT, details TEXT NOT NULL,
+        PRIMARY KEY(schedule_id,source_row));
+        CREATE INDEX IF NOT EXISTS lgtc_sheet_rider ON lgtc_sheet_legs(rider_key,service_date);`);
+      readSheetDetails = db.prepare('SELECT source_row,route_key,details FROM lgtc_sheet_legs WHERE schedule_id=? AND source_stamp=?');
+      compareRiderHistory = db.prepare(`SELECT COUNT(DISTINCT service_date) AS priorDates,
+        COUNT(DISTINCT CASE WHEN route_key=? THEN service_date END) AS sameRouteDates, MAX(service_date) AS lastDate
+        FROM lgtc_sheet_legs WHERE rider_key=? AND service_date<? AND reference<>?`);
+      const batch = LGTC.detect(sheetFile.filename, sheetFile.base64, lgtcKey, true);
+      if (!batch) throw Error('Choose an LGTC CSV or Excel workbook.');
+      const { dispatchSource, ...schedule } = batch;
+      db.exec('BEGIN IMMEDIATE');
+      const inserted = db.prepare('INSERT OR IGNORE INTO lgtc_schedules VALUES(?,?,?,?)')
+        .run(batch.id, clock(), JSON.stringify(batch.summaries), JSON.stringify(schedule));
+      if (!inserted.changes) {
+        const { body } = db.prepare('SELECT body FROM lgtc_schedules WHERE id=?').get(batch.id);
+        const saved = JSON.parse(body);
+        if (saved.sourceStamp === batch.sourceStamp && saved.rows.some((row,i) =>
+          JSON.stringify(row.instructionPolicy) !== JSON.stringify(batch.rows[i].instructionPolicy))) {
+          saved.rows.forEach((row,i) => { row.instructionPolicy = batch.rows[i].instructionPolicy; });
+          for (const draft of Object.values(saved.drafts || {})) draft.stale = true;
+          saved.revision = (saved.revision ?? 0) + 1;
+          db.prepare('UPDATE lgtc_schedules SET body=? WHERE id=?').run(JSON.stringify(saved),batch.id);
+        }
+      }
+      const storedSchedule = JSON.parse(db.prepare('SELECT body FROM lgtc_schedules WHERE id=?').get(batch.id).body);
+      const { complete } = db.prepare(`SELECT COUNT(*) AS complete FROM lgtc_sheet_legs
+        WHERE schedule_id=? AND source_stamp=? AND json_array_length(details,'$.sourceFields')=38`).get(batch.id,batch.sourceStamp);
+      if (storedSchedule.sourceStamp === batch.sourceStamp && complete !== batch.rows.length) saveSheetDetails(batch);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
   const lgtcPreferenceRows=db.prepare('SELECT customer_key,driver_id FROM lgtc_preferences');
   function lgtcData() {
     const state = load();
@@ -119,7 +172,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   const lgtcAutomation = () => JSON.parse(db.prepare('SELECT body FROM lgtc_automation WHERE id=1').get()?.body || 'null') ||
     { enabled:false, driverIds:[], buffer:30, profiles:{} };
   const lgtcRoster = roster => roster.map(d => ({
-    id:d.id,name:d.name,vehicle:d.vehicle,seats:d.seats,accessible:d.capabilities.includes('wheelchair')
+    id:d.id,name:d.name,vehicle:d.vehicle,seats:d.seats,accessible:d.capabilities.includes('wheelchair'),availability:d.availability
   }));
   function setLgtcPreference(key, driverId, roster) {
     if (driverId === null) db.prepare('DELETE FROM lgtc_preferences WHERE customer_key=?').run(key);
@@ -132,16 +185,37 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   function lgtcPlanContext(batch, date, settings, { roster, preferences }) {
     const rosterById = new Map(roster.map(d => [d.id,d]));
     return hash(JSON.stringify([
+      'daily-staffing-v6',
       settings.driverIds.map(id => {
         const d = rosterById.get(id);
-        return d && [d.id,d.name,d.vehicle,d.vehicleId,d.plate,d.seats,d.capabilities];
+        return d && [d.id,d.name,d.vehicle,d.vehicleId,d.plate,d.seats,d.capabilities,
+          ...(d.availability?.[date] ? [d.availability[date]] : [])];
       }),
       batch.rows.filter(r => r.serviceDate === date).map(r => preferences.get(r.customerKey) || null)
     ]));
   }
   function lgtcView(batch, data = lgtcData()) {
     const view = LGTC.scheduleView(batch, data.preferences);
+    if (readSheetDetails && batch.sourceStamp) {
+      const details = new Map(readSheetDetails.all(batch.id,batch.sourceStamp).map(row => [row.source_row,row]));
+      const riderKeys = new Map(batch.rows.map(row => [row.row,row.customerKey]));
+      view.rows = view.rows.map(row => {
+        const stored = details.get(row.row);
+        if (!stored) return row;
+        const { name, pickupAddress, destinationAddress, instructions } = JSON.parse(stored.details);
+        const sourceDetails = { name, pickupAddress, destinationAddress, instructions };
+        const riderKey = riderKeys.get(row.row);
+        const riderHistory = riderKey ? compareRiderHistory.get(stored.route_key,riderKey,row.serviceDate,row.reference) : null;
+        return { ...row, sourceDetails, riderHistory };
+      });
+    }
     const defaults = lgtcAutomation();
+    view.summaries = view.summaries.map(day => {
+      const settings = batch.drafts?.[day.serviceDate]?.settings || defaults;
+      const staffingRoster = settings.driverIds?.length ? data.roster.filter(driver => settings.driverIds.includes(driver.id)) : data.roster;
+      const staffing = LGTC.uploadStaffing(view.rows.filter(row => row.serviceDate === day.serviceDate),day.serviceDate,staffingRoster,settings.buffer);
+      return { ...day, staffing };
+    });
     view.automation = { enabled:defaults.enabled, driverCount:defaults.driverIds.length, codes:Object.keys(defaults.profiles).sort() };
     view.roster = lgtcRoster(data.roster);
     view.linked = batch.rows.some(row => Object.hasOwn(row,'customerKey'));
@@ -223,6 +297,24 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       if(res.writableNeedDrain){listeners.delete(res);res.destroy();continue;}
       try { res.write(`event: state\ndata: ${JSON.stringify({ state: clientState(user), at: clock() })}\n\n`); } catch { listeners.delete(res); }
     }
+  }
+  function wakeWaitingRides(state, driverId, now) {
+    const driver = state.drivers.find(candidate => candidate.id === driverId);
+    if (driver?.status !== 'online') return 0;
+    const opens = now + Operations.settings(state).dispatchLeadMinutes * 60000;
+    let queued = 0;
+    for (const ride of state.trips) {
+      if (!ride.autoDispatch || ride.poolParentId || !['awaiting_driver','needs_reassignment'].includes(ride.status) ||
+          ride.pickupAt > opens || (ride.pickupAt < now-300000 && !(ride.recoveryUntil >= now)) ||
+          !(ride.retryAt > now) || (!ride.dispatchError && !Road.requiresRoad(ride))) continue;
+      if ((ride.demoRunId || null) !== (driver.demoRunId || null) || driver.seats < ride.passengers ||
+          ride.excluded?.includes(driverId) || !ride.requirements.every(requirement => driver.capabilities.includes(requirement))) continue;
+      const candidate = D.eligibility(state,ride,now).find(option => option.driver.id === driverId);
+      if (!candidate?.eligible && !candidate?.roadPending) continue;
+      ride.retryAt = now;
+      queued++;
+    }
+    return queued;
   }
   function mutate(work) {
     db.exec('BEGIN IMMEDIATE');
@@ -337,9 +429,12 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           (publicDemoBlockedWrites.has(url.pathname) || url.pathname === '/api/support' || url.pathname.startsWith('/api/support/'))) {
         return json(res, 403, { error: 'The public demo uses sample rides and simulated GPS. Personal data cannot be submitted here.' });
       }
+      if (sheetFile && req.method === 'POST' && url.pathname.startsWith('/api/demo/')) {
+        return json(res, 403, { error: 'This local session is using the imported schedule.' });
+      }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!pilot||user?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
@@ -524,20 +619,34 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/lgtc/schedules' && req.method === 'POST') {
         requireRole(user, 'owner'); const b = await body(req);
-        const batch = LGTC.detect(b.filename, b.base64, lgtcKey);
+        const batch = LGTC.detect(b.filename, b.base64, lgtcKey, !!sheetFile);
         if (!batch || b.id !== batch.id) throw Error('Upload and review this LGTC export before saving.');
-        db.prepare('INSERT OR IGNORE INTO lgtc_schedules VALUES(?,?,?,?)')
-          .run(batch.id, clock(), JSON.stringify(batch.summaries), JSON.stringify(batch));
+        const { dispatchSource, ...schedule } = batch;
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          db.prepare('INSERT OR IGNORE INTO lgtc_schedules VALUES(?,?,?,?)')
+            .run(batch.id, clock(), JSON.stringify(batch.summaries), JSON.stringify(schedule));
+          if (sheetFile) saveSheetDetails(batch);
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
         const saved = readLGTC(batch.id);
         const identitiesChanged = saved.rows.some((row,i) => row.customerKey !== batch.rows[i].customerKey);
+        const instructionsChanged = saved.rows.some((row,i) =>
+          JSON.stringify(row.instructionPolicy) !== JSON.stringify(batch.rows[i].instructionPolicy));
         const sourceChanged = saved.sourceStamp !== batch.sourceStamp;
         const automation = lgtcAutomation();
         const automaticDates = automation.enabled ? saved.dates.filter(date => !saved.drafts?.[date]) : [];
-        if (sourceChanged || identitiesChanged || automaticDates.length) {
+        if (sourceChanged || identitiesChanged || instructionsChanged || automaticDates.length) {
           const { batch:updated, result } = editLGTC({id:saved.id,revision:saved.revision ?? 0}, schedule => {
-            if (sourceChanged || identitiesChanged) {
+            if (sourceChanged || identitiesChanged || instructionsChanged) {
               schedule.sourceStamp = batch.sourceStamp;
-              schedule.rows.forEach((row,i) => { row.customerKey = batch.rows[i].customerKey; });
+              schedule.rows.forEach((row,i) => {
+                row.customerKey = batch.rows[i].customerKey;
+                row.instructionPolicy = batch.rows[i].instructionPolicy;
+              });
               for (const draft of Object.values(schedule.drafts || {})) draft.stale = true;
             }
             const data = lgtcData(), autoPlanned = [];
@@ -560,7 +669,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         const b = await body(req);
         if (!['preview','approve'].includes(b.action)) throw Error('Choose preview or approve.');
         const source = LGTC.detect(b.filename,b.base64,lgtcKey,true);
-        if (!source || source.id !== b.id) throw Error('Choose the original CSV for this saved schedule.');
+        if (!source || source.id !== b.id) throw Error('Choose the original file for this saved schedule.');
         const prepare = state => {
           const schedule = readLGTC(b.id);
           if (b.revision !== (schedule.revision ?? 0)) {
@@ -569,7 +678,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
             throw error;
           }
           if (!schedule.sourceStamp || source.sourceStamp !== schedule.sourceStamp) {
-            throw Error('This file does not match the saved upload. Save the original CSV and rebuild the day plan.');
+            throw Error('This file does not match the saved upload. Save the original file and rebuild the day plan.');
           }
           const draft = schedule.drafts?.[b.serviceDate];
           if (!draft?.plan?.settings.driverIds) throw Error('Save a day plan with named drivers first.');
@@ -625,6 +734,34 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         });
         return json(res, 200, { batch });
       }
+      if (url.pathname === '/api/lgtc/review-repeated-notes' && req.method === 'POST') {
+        requireRole(user,'owner');
+        if (!readSheetDetails) return json(res,404,{error:'Repeated-note review is available in the local workbook session.'});
+        const input = await body(req);
+        const noteKey = notes => JSON.stringify(notes.map(note => note.trim().replace(/\s+/g,' ').toLowerCase()).sort());
+        const { batch, result } = editLGTC(input,schedule => {
+          const source = new Map(readSheetDetails.all(schedule.id,schedule.sourceStamp)
+            .map(item => [item.source_row,JSON.parse(item.details).instructions]));
+          const reference = schedule.rows.find(row => row.row === input.row && row.serviceDate === input.serviceDate);
+          const notes = source.get(reference?.row);
+          if (!notes?.length) throw Error('Choose a ride with workbook instructions.');
+          if (notes.some(note => /wheel[\s-]*chair|walker|stretcher|scooter|ramp|attendant|escort|companion|passengers?|extra seat|oxygen/i.test(note))) {
+            throw Error('Review vehicle, mobility, or passenger requirements on each ride.');
+          }
+          const key = noteKey(notes);
+          const matching = schedule.rows.filter(row => row.serviceDate === input.serviceDate && row.hasNotes &&
+            row.instructionPolicy?.needsReview !== false && !schedule.reviews?.[row.row]?.notesReviewed &&
+            source.has(row.row) && noteKey(source.get(row.row)) === key);
+          if (matching.length < 2 || matching.length !== input.count) throw Error('The matching rides changed. Reopen the schedule and review again.');
+          schedule.reviews ??= {};
+          for (const row of matching) schedule.reviews[row.row] = {
+            start:null,end:null,mode:'',seats:null,...schedule.reviews[row.row],notesReviewed:true,
+          };
+          if (schedule.drafts?.[input.serviceDate]) schedule.drafts[input.serviceDate].stale = true;
+          return matching.length;
+        });
+        return json(res,200,{batch,count:result});
+      }
       if (url.pathname === '/api/lgtc/plan' && req.method === 'POST') {
         requireRole(user, 'owner'); const b = await body(req);
         const data = lgtcData();
@@ -673,10 +810,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         requireRole(user,'driver');const b=await body(req);
         const result=mutate(s=>{
           const now=clock(), result=Location.ingest(s,user,b,now);
-          if (roadRouting && result.accepted.length) for (const trip of s.trips) {
-            if (Road.requiresRoad(trip) && trip.autoDispatch && ['awaiting_driver','needs_reassignment'].includes(trip.status) &&
-                trip.pickupAt >= now-300000 && trip.pickupAt <= now+Operations.settings(s).dispatchLeadMinutes*60000) trip.retryAt=now;
-          }
+          if (result.accepted.length) wakeWaitingRides(s,user.driverId,now);
           return result;
         });
         if(result.accepted.length)publish();return json(res,200,result);
@@ -783,7 +917,40 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
             d.trackingEnabled=false;
             for (const o of s.offers) if (o.driverId === d.id && o.status === 'pending') D.closeOffer(s,o,'declined',clock());
           }
-          d.status = b.status; if(d.locationSource!=='device')d.lastLocationAt = clock(); }); publish(); return json(res, 200, { ok: true });
+          const becameAvailable = d.status !== 'online' && b.status === 'online';
+          d.status = b.status;
+          const now = clock();
+          if (d.locationSource !== 'device') d.lastLocationAt = now;
+          if (becameAvailable) wakeWaitingRides(s,d.id,now);
+        }); publish(); return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/api/driver/availability' && req.method === 'POST') {
+        requireRole(user,'driver');
+        const { serviceDate, selection, start, end } = await body(req);
+        if (typeof serviceDate !== 'string' || !/^20\d\d-\d\d-\d\d$/.test(serviceDate) || LGTC.easternPickup(serviceDate,720) === null) {
+          throw Error('Choose a valid date.');
+        }
+        if (!['hours','unavailable','clear'].includes(selection)) throw Error('Choose how you are available.');
+        let shift;
+        if (selection === 'unavailable') shift = { unavailable:true };
+        if (selection === 'hours') {
+          const clockMinutes = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(value || '')
+            ? Number(value.slice(0,2))*60 + Number(value.slice(3)) : null;
+          const from = clockMinutes(start), to = clockMinutes(end);
+          const startAt = LGTC.easternPickup(serviceDate,from), endAt = LGTC.easternPickup(serviceDate,to);
+          if (startAt === null || endAt === null || endAt <= startAt) throw Error('Enter a start and end time on the same date. End must be after start.');
+          shift = { start:from, end:to, startAt, endAt };
+        }
+        mutate(s => {
+          const driver = s.drivers.find(d => d.id === user.driverId);
+          if (!driver) throw Error('Driver not found.');
+          driver.availability ??= {};
+          if (shift) driver.availability[serviceDate] = shift;
+          else delete driver.availability[serviceDate];
+          wakeWaitingRides(s,driver.id,clock());
+        });
+        publish();
+        return json(res,200,{ ok:true });
       }
       if (url.pathname === '/api/book' && req.method === 'POST') {
         requireRole(user); if (!['customer','owner'].includes(user.role)) { const e=new Error('Customer or owner access required');e.status=403;throw e; } const b = await body(req);

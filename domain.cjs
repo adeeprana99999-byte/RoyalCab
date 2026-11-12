@@ -4,6 +4,7 @@ const Operations = require('./operations.cjs');
 const Reservations=require('./reservations.cjs');
 const { MAX_AGE: LOCATION_MAX_AGE } = require('./location.cjs');
 const { deviceReady, requiresRoad } = require('./road-routing.cjs');
+const easternServiceDate = new Intl.DateTimeFormat('en-CA', { timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit' });
 function freeDriver(d){
  d.status=d.finishThenOffline?'offline':'online';
  if(d.status==='offline')d.trackingEnabled=false;
@@ -56,6 +57,9 @@ function eligibility(s,t,now,ignoreOffer){
   if(road&&!deviceReady(d,now))reasons.push('Fresh phone GPS required');
   if(!road&&(d.locationSource==='replay'||d.locationSource==='device'&&(!t.lgtc?.test||!d.trackingEnabled)))reasons.push('Real routing connection required');
   if(d.status!=='online')reasons.push(d.status==='busy'?'On another ride':'Offline');
+  const shift = d.availability && Number.isFinite(t.pickupAt) ? d.availability[easternServiceDate.format(t.pickupAt)] : null;
+  if (shift?.unavailable || shift && (Math.max(t.pickupAt,now) < shift.startAt || Math.max(t.pickupAt,now) >= shift.endAt ||
+      (t.plannedPickupAt === t.pickupAt && t.plannedEndAt > shift.endAt))) reasons.push('Outside the driver’s scheduled hours');
   if(!road&&(!Number.isFinite(d.lastLocationAt)||now-d.lastLocationAt>120000||now<d.lastLocationAt||eta===null))reasons.push('Fresh location required');
   if(road&&(!pickup||!destination))reasons.push('Verified pickup and drop-off coordinates required');
   if(d.seats<t.passengers)reasons.push('Not enough seats');
@@ -87,7 +91,12 @@ function regularDriver(s,t){
 }
 function eligible(s,t,now,ignoreOffer){
  const regular=regularDriver(s,t), planned=t.plannedPickupAt===t.pickupAt?t.plannedDriverId:null;
- const priority=[t.reservedDriverId,regular||planned];
+ const paired=t.lgtc?.pairedReference && s.trips.find(ride =>
+   ride.customerPhone === t.customerPhone && ride.lgtc?.reference === t.lgtc.pairedReference &&
+   ride.lgtc?.pairedReference === t.lgtc.reference && ride.lgtc.program === t.lgtc.program &&
+   ride.lgtc.serviceDate === t.lgtc.serviceDate &&
+   ['accepted','heading_to_pickup','arrived','onboard','completed'].includes(ride.status));
+ const priority=[t.reservedDriverId,paired?.driverId,regular||planned];
  return eligibility(s,t,now,ignoreOffer).filter(x=>x.eligible).sort((a,b)=>{
   for (const id of priority) {
    const diff=Number(b.driver.id===id)-Number(a.driver.id===id);

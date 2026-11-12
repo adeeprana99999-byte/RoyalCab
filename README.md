@@ -12,7 +12,15 @@ node start-demo.cjs
 
 Open [ProLift on localhost](http://localhost:4720/) and select **Open owner dashboard**. If port 4720 is already in use, set `$env:PORT = '4725'` before starting and open port 4725 instead.
 
-The demo rebuilds its synthetic bookings in memory on each start. It creates fresh import examples for the next day under `demo-generated/`. The `examples/` directory contains fixed-date copies for reference.
+The demo rebuilds its synthetic bookings in memory on each start. It creates fresh import examples for the next day under `demo-generated/`.
+
+To open the November 13 schedule with 284 de-identified test rides, run this from a fresh checkout:
+
+```powershell
+node start-demo.cjs --sheet examples/LGTC-November-13-Test.csv
+```
+
+The local workbook session saves its data under `data/`. Git ignores this directory.
 
 ## Preview on Render
 

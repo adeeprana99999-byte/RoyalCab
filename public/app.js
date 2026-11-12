@@ -194,7 +194,7 @@ function loginContent() {
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
-async function enter(u) {stopConnection();state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? 'overview' : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function enter(u) {stopConnection();state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 function bindLogin() {
   document.querySelectorAll('[data-login-tab]').forEach(el => el.onclick = () => { loginTab = el.dataset.loginTab; codeSent = false; renderLogin(); });
   if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'owner' })).user));
@@ -829,8 +829,10 @@ function simpleTripTable(trips) {
 }
 function importsPage() {
   if (config.publicDemo) return heading('PLANNED RIDES', 'Try the sample rides.', 'The public demo uses built-in test data. File uploads are available in the local demo.');
-  return heading('BOOKINGS', 'Import trips', 'Open an LGTC schedule for planning, or import bookings using the ProLift template.', '<a class="btn" href="/api/template">Download Excel template</a>') +
-    `<div class="import-grid"><section class="panel upload-panel"><span class="upload-symbol">${icon('upload')}</span><h2>Upload a trip file</h2><p>LGTC CSV or ProLift Excel/CSV · Up to 1,000 trips · Maximum 5 MB</p><label class="file-label">Choose file<input id="import-file" type="file" accept=".xlsx,.csv"></label><p class="help">Upload the LGTC export as received. The local planning copy keeps references, times and stop cities. Keep the original for rider details and instructions.</p><div id="upload-progress" aria-live="polite"></div></section><section class="panel" id="lgtc-history"><h2>Saved LGTC schedules</h2>${lgtcHistoryView()}</section></div>${batch?.kind === 'lgtc' ? lgtcPreview() : batch ? previewImport() : ''}${state.imports.length ? '<section class="panel"><details><summary>Recent ProLift template imports</summary>' + state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details></section>' : ''}`;
+  const files = '<p><a class="btn" href="/api/template">Download Excel template</a></p>' +
+    `<div class="import-grid"><section class="panel upload-panel"><span class="upload-symbol">${icon('upload')}</span><h2>Upload a trip file</h2><p>LGTC or ProLift Excel/CSV · Up to 1,000 trips · Maximum 5 MB</p><label class="file-label">Choose file<input id="import-file" type="file" accept=".xlsx,.csv"></label><p class="help">Upload the LGTC export as received. The local planning copy keeps references, times and stop cities. Keep the original for rider details and instructions.</p><div id="upload-progress" aria-live="polite"></div></section><section class="panel" id="lgtc-history"><h2>Saved LGTC schedules</h2>${lgtcHistoryView()}</section></div>${state.imports.length ? '<section class="panel"><details><summary>Recent ProLift template imports</summary>' + state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details></section>' : ''}`;
+  if (batch?.kind === 'lgtc') return lgtcPreview(files);
+  return files + (batch ? previewImport() : '');
 }
 function previewImport() {
   const invalid = batch.rows.filter(r => r.errors.length).length;
@@ -839,14 +841,75 @@ function previewImport() {
 function fleetPage() { return heading('LIVE OPERATIONS', 'Stay close to your fleet.', 'Location freshness and driver status, updated over a live connection.') + `<div class="overview-grid fleet-large"><section class="panel">${mapView()}</section><section class="panel"><div class="panel-heading"><h2>Working drivers</h2></div><div class="driver-list">${driverRows()}</div></section></div><div class="notice">${icon('map')} This is a schematic with simulated GPS. Real Google maps and phone GPS are separate production integrations.</div>`; }
 function driversPage() { return heading('YOUR TEAM', 'The people behind every pickup.', 'Availability, vehicles, and current work in one place.') + `<div class="driver-cards">${state.drivers.map(d => { const t = state.trips.find(t => !t.poolParentId && t.driverId === d.id && active(t)); return `<article class="panel driver-card"><div class="driver-card-top"><span class="avatar large">${esc(d.name.split(' ').map(x => x[0]).join(''))}</span>${badge(d.status)}</div><h2>${esc(d.name)}</h2><p>${esc(d.vehicle)} · ${esc(d.plate)}</p><div class="specs"><span>${d.seats} passenger seats</span><button class="btn small" data-capacity="${d.id}">Set 4 / 7 seats</button><span>${d.capabilities.length ? 'Wheelchair accessible' : 'Standard vehicle'}</span></div><div class="driver-assignment">${t ? `<small>CURRENT TRIP</small><button class="text-btn" data-detail="${t.id}">${esc(t.reference)} ${icon('arrow')}</button><p>${esc(t.pickup)}</p>` : '<small>NO ACTIVE TRIP</small><p>Ready for the next assignment.</p>'}</div><small class="muted">Last location ${Number.isFinite(d.lastLocationAt) ? time(d.lastLocationAt) : "unavailable"}</small><button class="btn small" data-driver-day="${esc(d.id)}">Driver day</button></article>`; }).join('')}</div>`; }
 function activityPage() { return heading('ACCOUNTABILITY', 'Every update has a history.', 'Assignments, driver drops, trip updates, and import activity.') + `<section class="panel">${state.events.length ? state.events.slice(0, 100).map(e => `<div class="activity-row">${icon(e.type.includes('reassignment') ? 'flag' : 'clock')}<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><span>${esc(e.reference || '')} · ${esc(e.actor)}</span><small>${esc(e.detail)}</small></div><time>${date(e.at)} · ${time(e.at)}</time></div>`).join('') : '<div class="empty"><p>Activity appears as your team works.</p></div>'}</section>`; }
+function pairedRideLabel(trip) {
+  if (!trip.lgtc?.pairedReference) return '';
+  const paired = state.trips.find(other => other.customerPhone === trip.customerPhone &&
+    other.lgtc?.reference === trip.lgtc.pairedReference && other.lgtc?.pairedReference === trip.lgtc.reference &&
+    other.lgtc.program === trip.lgtc.program && other.lgtc.serviceDate === trip.lgtc.serviceDate);
+  return '<p class="help"><strong>' + esc(trip.lgtc.direction) + ' ride</strong> · ' +
+    (paired && user.role === 'customer' ? '<button type="button" class="text-btn" data-customer-paired-ride="' + esc(paired.id) +
+      '">Open paired ride ' + esc(trip.lgtc.pairedReference) + '</button>' : 'Paired ride ' + esc(trip.lgtc.pairedReference)) + '</p>';
+}
 function tripCard(t) {
   const driver = state.drivers.find(d => d.id === t.driverId) || (t.status==='completed'?t.confirmedDriver:null), offer = state.offers.find(o => o.tripId === t.id && o.status === 'pending' && o.expiresAt > Date.now());
-  return `<article class="panel trip-card ${t.redFlag ? 'flagged-card' : ''}"><div class="trip-card-head"><strong>${esc(t.reference)}</strong>${badge(t.status, t.redFlag)}</div><div class="trip-card-time"><strong>${time(t.pickupAt)}</strong><span>${date(t.pickupAt)} · ${t.passengers} passenger${t.passengers > 1 ? 's' : ''}</span></div><div class="journey"><div><span class="journey-dot"></span><small>PICKUP</small><strong>${esc(t.pickup)}</strong></div><div><span class="journey-dot end"></span><small>DESTINATION</small><strong>${esc(t.destination)}</strong></div></div>${t.isSharedRun?'<section class="shared-run-preview notice"><strong>Shared run · '+t.passengers+' passengers · '+(t.collectedStops||0)+' / '+t.sharedStops.length+' pickups collected</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+time(x.plannedAt)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s)'+(i<(t.collectedStops||0)?' · Onboard':i===(t.collectedStops||0)?' · NEXT':'')+'</li>').join('')+'</ol></section>':''}${user.role === 'driver' ? `<div class="trip-customer">${icon('users')} ${esc(t.customerName)}${t.isSharedRun?' · Follow pickup order':' · '+esc(t.customerPhone)}</div>` : driver ? `<div class="trip-customer">${icon('car')} ${esc(driver.name)} · ${esc(driver.vehicle)} · ${esc(driver.plate)}</div>` : '<p class="muted">Dispatch will confirm your driver.</p>'}${offer && user.role === 'driver' ? `<div class="offer-note"><span data-offer-countdown="${offer.expiresAt}">${Math.max(0,Math.ceil((offer.expiresAt-Date.now())/1000))} seconds to respond</span> · ${offer.etaSource==='road'?'Road':'Simulated'} pickup ETA ${offer.eta} min</div><div class="card-actions"><button class="btn primary" data-trip="${t.id}" data-action="accept" data-offer="${offer.id}">Accept trip</button><button class="btn" data-trip="${t.id}" data-action="decline" data-offer="${offer.id}">Decline</button></div>` : `${user.role==='customer'&&t.confirmedDriver&&active(t)?'<div class="confirmed-driver"><strong>Your confirmed driver: '+esc(t.confirmedDriver.name)+'</strong><span>'+esc(t.confirmedDriver.vehicle)+' · '+esc(t.confirmedDriver.plate)+'</span><span>Driver phone: '+esc(t.confirmedDriver.phone||'Contact dispatch')+'</span></div>':''}<div class="card-actions">${user.role === 'driver' ? driverButtons(t) : active(t) ? `<button class="btn primary" data-detail="${t.id}">${icon('map')} Track trip</button>${!t.poolParentId?`<button class="btn" data-trip="${t.id}" data-action="cancel">Cancel trip</button>`:''}` : t.status === 'completed' ? t.rating ? `<span class="rating">${'★'.repeat(t.rating)} · Your rating</span>` : `<button class="btn" data-rate="${t.id}">Rate your ride</button>` : ''}</div>`}${rideExplanation(t)}${rideExtras(t)}</article>`;
+  return `<article class="panel trip-card ${t.redFlag ? 'flagged-card' : ''}"><div class="trip-card-head"><strong>${esc(t.reference)}</strong>${badge(t.status, t.redFlag)}</div>${pairedRideLabel(t)}<div class="trip-card-time"><strong>${time(t.pickupAt)}</strong><span>${date(t.pickupAt)} · ${t.passengers} passenger${t.passengers > 1 ? 's' : ''}</span></div><div class="journey"><div><span class="journey-dot"></span><small>PICKUP</small><strong>${esc(t.pickup)}</strong></div><div><span class="journey-dot end"></span><small>DESTINATION</small><strong>${esc(t.destination)}</strong></div></div>${t.isSharedRun?'<section class="shared-run-preview notice"><strong>Shared run · '+t.passengers+' passengers · '+(t.collectedStops||0)+' / '+t.sharedStops.length+' pickups collected</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+time(x.plannedAt)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s)'+(i<(t.collectedStops||0)?' · Onboard':i===(t.collectedStops||0)?' · NEXT':'')+'</li>').join('')+'</ol></section>':''}${user.role === 'driver' ? `<div class="trip-customer">${icon('users')} ${esc(t.customerName)}${t.isSharedRun?' · Follow pickup order':' · '+esc(t.customerPhone)}</div>` : driver ? `<div class="trip-customer">${icon('car')} ${esc(driver.name)} · ${esc(driver.vehicle)} · ${esc(driver.plate)}</div>` : '<p class="muted">Dispatch will confirm your driver.</p>'}${offer && user.role === 'driver' ? `<div class="offer-note"><span data-offer-countdown="${offer.expiresAt}">${Math.max(0,Math.ceil((offer.expiresAt-Date.now())/1000))} seconds to respond</span> · ${offer.etaSource==='road'?'Road':'Simulated'} pickup ETA ${offer.eta} min</div><div class="card-actions"><button class="btn primary" data-trip="${t.id}" data-action="accept" data-offer="${offer.id}">Accept trip</button><button class="btn" data-trip="${t.id}" data-action="decline" data-offer="${offer.id}">Decline</button></div>` : `${user.role==='customer'&&t.confirmedDriver&&active(t)?'<div class="confirmed-driver"><strong>Your confirmed driver: '+esc(t.confirmedDriver.name)+'</strong><span>'+esc(t.confirmedDriver.vehicle)+' · '+esc(t.confirmedDriver.plate)+'</span><span>Driver phone: '+esc(t.confirmedDriver.phone||'Contact dispatch')+'</span></div>':''}<div class="card-actions">${user.role === 'driver' ? driverButtons(t) : active(t) ? `<button class="btn primary" data-detail="${t.id}">${icon('map')} Track trip</button>${!t.poolParentId?`<button class="btn" data-trip="${t.id}" data-action="cancel">Cancel trip</button>`:''}` : t.status === 'completed' ? t.rating ? `<span class="rating">${'★'.repeat(t.rating)} · Your rating</span>` : `<button class="btn" data-rate="${t.id}">Rate your ride</button>` : ''}</div>`}${rideExplanation(t)}${rideExtras(t)}</article>`;
 }
 function driverButtons(t) { const next = { accepted: ['depart', 'Head to pickup'], heading_to_pickup: ['arrive', 'I have arrived'], arrived: ['pickup', 'Passenger onboard'], onboard: ['complete', 'Complete trip'] }[t.status]; return next ? `<button class="btn primary" data-trip="${t.id}" data-action="${next[0]}">${icon('check')} ${t.isSharedRun&&next[0]==='pickup'?'Confirm this pickup · '+((t.collectedStops||0)+1)+' / '+t.sharedStops.length:next[1]}</button>${['accepted', 'heading_to_pickup', 'arrived'].includes(t.status)&&!(t.collectedStops>0) ? `<button class="btn danger-text" data-release="${t.id}">Drop trip</button>` : ''}<button class="btn" data-detail="${t.id}">Details</button>` : ''; }
+function driverAvailabilityModal() {
+  const driver = state.drivers.find(item => item.id === user.driverId);
+  const availability = driver.availability || {};
+  const today = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  const dates = Object.keys(availability).filter(day => day >= today).sort().slice(0,7);
+  const timeValue = minutes => String(Math.floor(minutes/60)).padStart(2,'0') + ':' + String(minutes%60).padStart(2,'0');
+  modal('<h2>My availability</h2><p>Tell dispatch when you can take rides. Times are Eastern. Go online separately when you’re ready for offers.</p>' +
+    (dates.length ? '<p><strong>Upcoming availability</strong></p><ul>' + dates.map(day => {
+      const shift = availability[day];
+      const label = shift.unavailable ? 'Unavailable' : timeValue(shift.start) + '–' + timeValue(shift.end) + ' ET';
+      return '<li><button type="button" class="text-btn" data-driver-shift-date="' + day + '">' + day + ' · ' + label + '</button></li>';
+    }).join('') + '</ul>' : '') +
+    '<form id="driver-availability-form"><label>Date<input type="date" name="serviceDate" required value="' + today + '"></label>' +
+    '<label>Availability<select name="selection"><option value="hours">Available during these hours</option>' +
+    '<option value="unavailable">Unavailable that day</option><option value="clear">Clear saved availability</option></select></label>' +
+    '<div class="form-grid" id="driver-availability-hours"><label>Start (ET)<input type="time" name="start"></label>' +
+    '<label>End (ET)<input type="time" name="end"></label></div><button class="btn primary" type="submit">Save availability</button></form>');
+  const form = $('#driver-availability-form');
+  const { serviceDate, selection, start, end } = form.elements;
+  const toggleHours = () => {
+    const show = selection.value === 'hours';
+    $('#driver-availability-hours').hidden = !show;
+    start.required = end.required = show;
+  };
+  const loadDate = () => {
+    const shift = availability[serviceDate.value];
+    selection.value = shift?.unavailable ? 'unavailable' : 'hours';
+    start.value = shift && !shift.unavailable ? timeValue(shift.start) : '';
+    end.value = shift && !shift.unavailable ? timeValue(shift.end) : '';
+    toggleHours();
+  };
+  document.querySelectorAll('[data-driver-shift-date]').forEach(button => button.onclick = () => {
+    serviceDate.value = button.dataset.driverShiftDate;
+    loadDate();
+  });
+  serviceDate.onchange = loadDate;
+  selection.onchange = toggleHours;
+  loadDate();
+  form.onsubmit = event => {
+    event.preventDefault();
+    run(async () => {
+      const submit = event.submitter;
+      submit.disabled = true;
+      try {
+        await api('/api/driver/availability',Object.fromEntries(new FormData(form)));
+        $('#modal').close();
+        await refresh();
+        toast('Availability saved.');
+      } finally { submit.disabled = false; }
+    });
+  };
+}
 function driverPage() {
   const d = state.drivers.find(d => d.id === user.driverId), trips = state.trips.filter(t=>active(t)&&(t.driverId===user.driverId||state.offers.some(o=>o.tripId===t.id&&o.status==='pending')));
-  return heading('DRIVER WORKSPACE', `Let’s get moving, ${esc(user.name.split(' ')[0])}.`, 'Accept an offer, follow your pickup, and keep dispatch updated.', `<button class="btn ${d.status === 'online' ? 'primary' : ''}" id="toggle-status" ${d.status === 'busy' ? 'disabled' : ''}>${icon('bolt')} ${d.status === 'offline' ? 'Go online' : d.status === 'busy' ? 'On a trip' : 'Online · go offline'}</button>`) + '<section class="mobile-status panel"><span class="status-orb '+d.status+'">'+icon('car')+'</span><div><strong>'+(d.status==='busy'?'You have an active ride':d.status==='online'?'You’re available':'You’re offline')+'</strong><p>'+(d.status==='busy'?'Follow the next step on your ride card.':d.status==='online'?'Eligible pickup offers appear here automatically.':'Go online when you’re ready for pickups.')+'</p></div></section>' + (d.status==='busy'?`<section class="panel last-ride"><strong>${d.finishThenOffline?'You will go offline after this ride.':'Keep receiving rides after this trip?'}</strong><button class="btn" id="last-ride">${d.finishThenOffline?'Keep accepting rides':'Go offline after this ride'}</button></section>`:'') + `${phoneTrackingPanel(d)}<div class="trip-card-grid">${trips.length ? trips.map(tripCard).join('') : `<section class="panel empty">${icon('car')}<h2>${d.status === 'offline' ? 'You’re offline.' : 'Ready for the next trip.'}</h2><p>${d.status === 'offline' ? 'Go online to receive offers.' : 'New offers will appear here automatically.'}</p></section>`}</div>`;
+  return heading('DRIVER WORKSPACE', `Let’s get moving, ${esc(user.name.split(' ')[0])}.`, 'Accept an offer, follow your pickup, and keep dispatch updated.', `<button class="btn ${d.status === 'online' ? 'primary' : ''}" id="toggle-status" ${d.status === 'busy' ? 'disabled' : ''}>${icon('bolt')} ${d.status === 'offline' ? 'Go online' : d.status === 'busy' ? 'On a trip' : 'Online · go offline'}</button>`) + '<p><button type="button" class="btn" id="driver-availability">My availability</button></p><section class="mobile-status panel"><span class="status-orb '+d.status+'">'+icon('car')+'</span><div><strong>'+(d.status==='busy'?'You have an active ride':d.status==='online'?'You’re available':'You’re offline')+'</strong><p>'+(d.status==='busy'?'Follow the next step on your ride card.':d.status==='online'?'Eligible pickup offers appear here automatically.':'Go online when you’re ready for pickups.')+'</p></div></section>' + (d.status==='busy'?`<section class="panel last-ride"><strong>${d.finishThenOffline?'You will go offline after this ride.':'Keep receiving rides after this trip?'}</strong><button class="btn" id="last-ride">${d.finishThenOffline?'Keep accepting rides':'Go offline after this ride'}</button></section>`:'') + `${phoneTrackingPanel(d)}<div class="trip-card-grid">${trips.length ? trips.map(tripCard).join('') : `<section class="panel empty">${icon('car')}<h2>${d.status === 'offline' ? 'You’re offline.' : 'Ready for the next trip.'}</h2><p>${d.status === 'offline' ? 'Go online to receive offers.' : 'New offers will appear here automatically.'}</p></section>`}</div>`;
 }
 var selectedCustomerTrip=null;
 function customerTracking(t,d,j){
@@ -873,7 +936,7 @@ function customerPage(){
  return '<section class="rider-journey"><header class="rider-header"><div><span class="eyebrow">YOUR JOURNEY</span><h1>'+esc(j.title)+'</h1><p>'+esc(j.description)+'</p></div></header>'+
  (trips.length>1?'<label class="rider-switch">Viewing ride<select id="customer-ride-choice">'+trips.map(x=>'<option value="'+x.id+'" '+(x.id===t.id?'selected':'')+'>'+esc(x.pickup)+' → '+esc(x.destination)+' · '+date(x.pickupAt)+'</option>').join('')+'</select></label>':'')+
  (j.late?'<div class="rider-warning"><strong>Your pickup time has passed</strong><span>Please check with your driver or send a help request. The app has no verified new arrival time.</span></div>':'')+
- '<div class="rider-layout">'+customerTracking(t,d,j)+'<section class="rider-sheet"><div class="rider-time"><span>Pickup '+date(t.pickupAt)+'</span><strong>'+time(t.pickupAt)+'</strong><span>'+esc(t.reference)+'</span></div><div class="rider-stops"><div><i></i><span>MEET HERE<strong>'+esc(t.pickup)+'</strong></span></div><div><i></i><span>GOING TO<strong>'+esc(t.destination)+'</strong></span></div></div><ol class="rider-steps">'+['Booked','Driver confirmed','At pickup','On your way'].map((label,i)=>'<li class="'+(i<=j.step?'reached':'')+'" '+(i===j.step?'aria-current="step"':'')+'><i>'+ (i<j.step?'✓':i+1)+'</i><span>'+label+'</span></li>').join('')+'</ol>'+
+ '<div class="rider-layout">'+customerTracking(t,d,j)+'<section class="rider-sheet"><div class="rider-time"><span>Pickup '+date(t.pickupAt)+'</span><strong>'+time(t.pickupAt)+'</strong><span>'+esc(t.reference)+'</span></div>'+pairedRideLabel(t)+'<div class="rider-stops"><div><i></i><span>MEET HERE<strong>'+esc(t.pickup)+'</strong></span></div><div><i></i><span>GOING TO<strong>'+esc(t.destination)+'</strong></span></div></div><ol class="rider-steps">'+['Booked','Driver confirmed','At pickup','On your way'].map((label,i)=>'<li class="'+(i<=j.step?'reached':'')+'" '+(i===j.step?'aria-current="step"':'')+'><i>'+ (i<j.step?'✓':i+1)+'</i><span>'+label+'</span></li>').join('')+'</ol>'+
  (identity?'<div class="rider-identity"><span class="avatar large">'+esc(identity.name.split(' ').map(x=>x[0]).join('').slice(0,2))+'</span><div><strong>'+esc(identity.name)+'</strong><span>'+esc(identity.vehicle)+'</span><b>'+esc(identity.plate)+'</b></div></div>':'<div class="rider-unassigned">Driver and car details will appear here after acceptance.</div>')+
  rideExplanation(t)+'<div class="rider-main-action">'+(identity?.phone?'<a class="btn primary" href="tel:'+esc(identity.phone)+'">'+icon('users')+' Call driver</a>':'<button class="btn primary" data-help-trip="'+t.id+'">Ask about my pickup</button>')+'</div><div class="rider-secondary"><button class="text-btn" data-help-trip="'+t.id+'">Get help</button><button class="text-btn" data-go="messages">Ride updates</button>'+(t.status!=='onboard'?'<button class="text-btn" data-trip="'+t.id+'" data-action="cancel">Cancel ride</button>':'')+'</div></section></div><button class="btn rider-book" id="book-trip">'+icon('plus')+' Book another ride</button></section>';
 }
@@ -887,7 +950,7 @@ function render() {
 function modal(content) { const el = $('#modal'); el.innerHTML = `<div class="modal-top"><span class="eyebrow">PROLIFT</span><button class="icon-btn" id="close-modal" aria-label="Close dialog">×</button></div>${content}`; el.showModal(); $('#close-modal').onclick = () => { el.close(); render(); }; el.oncancel = () => setTimeout(() => { if (!el.open) render(); }); }
 function tripDetail(id) {
   const t = state.trips.find(t => t.id === id), driver = state.drivers.find(d => d.id === t.driverId);
-  modal(`<h2>${esc(t.reference)}</h2><p>${esc(t.customerName)} · ${date(t.pickupAt)} at ${time(t.pickupAt)}</p>${badge(t.status, t.redFlag)}${rideExplanation(t)}<div class="detail-route">${esc(t.pickup)} ${icon('arrow')} ${esc(t.destination)}</div>${t.isSharedRun?'<section class="notice"><strong>Shared pickup order · '+t.passengers+' passengers total</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+esc(x.reference)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s) · '+(i<(t.collectedStops||0)?'Onboard':i===(t.collectedStops||0)?'Next pickup':'Waiting')+'</li>').join('')+'</ol></section>':''}${tripFacts(t,driver)}${mapView(driver ? [driver] : [], t)}<p>${driver ? `<strong>${esc(driver.name)}</strong> · ${esc(driver.vehicle)} · ${esc(driver.plate)}<br><small>Location updated ${time(driver.lastLocationAt)} · ${driver.locationSource==='device'?'Phone GPS':'Simulated GPS'}</small>` : 'No driver assigned yet.'}</p>${t.dispatchError ? `<p class="validation-error">${esc(t.dispatchError)}</p>` : ''}<h3>Trip timeline</h3><div class="timeline">${state.events.filter(e => e.tripId === t.id).slice(0, 10).map(e => `<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><small>${time(e.at)} · ${esc(e.actor)} · ${esc(e.detail)}</small></div>`).join('') || '<p class="muted">Awaiting first update.</p>'}</div>${user.role === 'owner' && active(t) && t.status !== 'onboard' && !t.poolParentId && !(t.collectedStops>0) ? `<button class="btn danger-text" id="detail-cancel">Cancel trip</button>` : ''}`);
+  modal(`<h2>${esc(t.reference)}</h2><p>${esc(t.customerName)} · ${date(t.pickupAt)} at ${time(t.pickupAt)}</p>${badge(t.status, t.redFlag)}${pairedRideLabel(t)}${rideExplanation(t)}<div class="detail-route">${esc(t.pickup)} ${icon('arrow')} ${esc(t.destination)}</div>${t.isSharedRun?'<section class="notice"><strong>Shared pickup order · '+t.passengers+' passengers total</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+esc(x.reference)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s) · '+(i<(t.collectedStops||0)?'Onboard':i===(t.collectedStops||0)?'Next pickup':'Waiting')+'</li>').join('')+'</ol></section>':''}${tripFacts(t,driver)}${mapView(driver ? [driver] : [], t)}<p>${driver ? `<strong>${esc(driver.name)}</strong> · ${esc(driver.vehicle)} · ${esc(driver.plate)}<br><small>Location updated ${time(driver.lastLocationAt)} · ${driver.locationSource==='device'?'Phone GPS':'Simulated GPS'}</small>` : 'No driver assigned yet.'}</p>${t.dispatchError ? `<p class="validation-error">${esc(t.dispatchError)}</p>` : ''}<h3>Trip timeline</h3><div class="timeline">${state.events.filter(e => e.tripId === t.id).slice(0, 10).map(e => `<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><small>${time(e.at)} · ${esc(e.actor)} · ${esc(e.detail)}</small></div>`).join('') || '<p class="muted">Awaiting first update.</p>'}</div>${user.role === 'owner' && active(t) && t.status !== 'onboard' && !t.poolParentId && !(t.collectedStops>0) ? `<button class="btn danger-text" id="detail-cancel">Cancel trip</button>` : ''}`);
   $('#modal h2').dataset.tripDetailId = id;
   if (user.role === 'owner' && tab !== 'overview' && canShowInDispatch(t)) {
     const button = document.createElement('button');
@@ -1270,6 +1333,13 @@ function bindGeographicMap(){
 }
 
 function bindActions() {
+  document.querySelectorAll('[data-customer-paired-ride]').forEach(button => button.onclick = () => {
+    selectedCustomerTrip = button.dataset.customerPairedRide;
+    if ($('#modal[open]')) $('#modal').close();
+    tab = 'mytrips';
+    render();
+  });
+  if ($('#driver-availability')) $('#driver-availability').onclick = driverAvailabilityModal;
   document.querySelectorAll('[data-replace-confirmed]').forEach(b=>b.onclick=()=>replaceConfirmed(b.dataset.replaceConfirmed));
   if (user.role === 'owner') bindLgtc();
   if (user.role === 'owner') bindDriverDayButtons();
@@ -1399,18 +1469,30 @@ function bindActions() {
   document.querySelectorAll('[data-filter]').forEach(el => el.onclick = () => { filter = el.dataset.filter; boardPage = 1; render(); });
   if ($('#trip-search')) $('#trip-search').oninput = e => { search = e.target.value; boardPage = 1; const position = e.target.selectionStart; render(); const input = $('#trip-search'); input.focus(); if (input.type === 'text') input.setSelectionRange(position, position); };
   if ($('#import-file')) $('#import-file').onchange = e => run(async () => {
-    const file = e.target.files[0]; if (!file) return; if (file.size > 5 * 1024 * 1024) throw new Error('Maximum file size is 5 MB');
-    $('#upload-progress').textContent = 'Reading and validating your spreadsheet…';
-    const base64 = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); });
+    const input = e.currentTarget;
+    const file = input.files[0];
+    if (!file) return;
+    input.disabled = true;
+    $('#upload-progress').textContent = 'Reading ' + file.name + '…';
     try {
+      if (file.size > 5 * 1024 * 1024) throw new Error('Maximum file size is 5 MB');
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = () => reject(new Error('Could not read the selected file.'));
+        reader.readAsDataURL(file);
+      });
       batch = (await api('/api/import/preview', { filename: file.name, base64 })).batch;
       lgtcUpload = batch.kind === 'lgtc' ? { filename: file.name, base64 } : null;
       if (lgtcUpload) { lgtcSelect(batch.dates[0]); render(); $('#lgtc-review')?.scrollIntoView({block:'start'}); }
       else await refresh();
-      toast('Preview ready. Review the rows before saving.');
+      toast(batch.rows.length + ' rows read from ' + file.name + '. Review the preview before saving.');
     } catch (error) {
-      if ($('#upload-progress')) $('#upload-progress').textContent = error.message;
+      if ($('#upload-progress')) $('#upload-progress').textContent = 'Could not load ' + file.name + '. ' + error.message;
       throw error;
+    } finally {
+      input.value = '';
+      input.disabled = false;
     }
   });
   if ($('#confirm-import')) $('#confirm-import').onclick = () => run(async () => { const result = await api('/api/import/confirm', { batchId: batch.id }); batch.confirmed = true; tripDataScope = 'live'; bookingOrder = 'next'; filter = 'all'; search = ''; boardPage = 1; tab = 'trips'; await refresh(); toast(`${result.count} trips added to Bookings and the ordinary dispatch queue.`); });
@@ -1621,6 +1703,8 @@ function showDispatchHealth() {
   modal('<h2>Dispatch status</h2><p>' + (road ? 'Road ETA pilot · Offers require fresh phone GPS and a Google road estimate.' :
     'Local demo · Pickup estimates are simulated.') + '</p><p>Offers open ' + dispatchLead() +
     ' minutes before pickup. Drivers confirm by accepting an offer.</p>' +
+    '<p><strong>Last scheduler check</strong> ' + (h?.lastSuccessAt ? time(h.lastSuccessAt) : 'Waiting for the first check') +
+    '. The server checks every ' + (h?.intervalSeconds || 3) + ' seconds. An available driver can bring an eligible waiting ride forward for another attempt.</p>' +
     (routing?.lastError ? '<p class="validation-error">' + esc(routing.lastError) + '</p>' : '') +
     (road ? '<p>Last successful route matrix ' + (routing.lastMatrixAt ? time(routing.lastMatrixAt) : 'pending') +
       '.</p><small>Powered by Google, ©' + new Date().getFullYear() + ' Google</small>' : '') +

@@ -31,9 +31,14 @@ function writeExampleFiles() {
 async function start(createApp) {
   const hosted=process.env.PROLIFT_HOSTED_DEMO==='1';
   const publicDemo=hosted&&process.env.PROLIFT_PUBLIC_DEMO==='1';
+  const sheetIndex = process.argv.indexOf('--sheet');
+  const sheetPath = sheetIndex < 0 ? null : process.argv[sheetIndex+1];
+  if (sheetIndex >= 0 && (!sheetPath || hosted)) throw Error('Use --sheet with an LGTC file for local testing.');
+  const sheetFile = sheetPath ? {filename:path.basename(sheetPath),base64:fs.readFileSync(sheetPath).toString('base64')} : undefined;
   const password=hosted&&!publicDemo?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
   const invite=hosted&&!publicDemo?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
-  const app=createApp({dbPath:':memory:',hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo});
+  const dbPath = sheetFile ? path.join(__dirname,'data','lgtc-sheet-history.sqlite') : ':memory:';
+  const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile});
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
     app.server.once('error',reject);
@@ -51,6 +56,9 @@ async function start(createApp) {
     return response.json();
   }
   try {
+    if (sheetFile) {
+      console.log('RoyalCab / ProLift sheet-only test ' + url);
+    } else {
     await post('/api/demo-login',{role:'owner'});
     await post('/api/demo/volume',{});
     await post('/api/demo/queue-review',{});
@@ -64,6 +72,7 @@ async function start(createApp) {
     const folder=writeExampleFiles();
     console.log(hosted?'RoyalCab / ProLift hosted demo listening on port '+app.server.address().port:'RoyalCab / ProLift demo '+url);
     console.log('Demo datasets loaded. Next-day LGTC and Excel files: '+folder);
+    }
   } catch(error) {
     app.close();
     app.server.closeAllConnections();
