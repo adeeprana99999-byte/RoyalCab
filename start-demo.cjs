@@ -38,7 +38,7 @@ async function start(createApp) {
   const password=hosted&&!publicDemo?(process.env.PROLIFT_PREVIEW_PASSWORD||''):undefined;
   const invite=hosted&&!publicDemo?process.env.PROLIFT_PREVIEW_INVITE_TOKEN:undefined;
   const dbPath = sheetFile ? path.join(__dirname,'data','lgtc-sheet-history.sqlite') : ':memory:';
-  let ownerRecords, mongoClient;
+  let ownerRecords, mongoClient, mongoReplay;
   if (hosted && process.env.ROYALCAB_MONGO_URI) {
     if (publicDemo || !password) throw Error('MongoDB Owner records require private hosted mode.');
     const { MongoClient } = require('./mongo-test/node_modules/mongodb');
@@ -46,8 +46,9 @@ async function start(createApp) {
     mongoClient = new MongoClient(process.env.ROYALCAB_MONGO_URI,{serverSelectionTimeoutMS:5000});
     const mongoDb = mongoClient.db('royalcab_dispatch_test');
     ownerRecords = (url,res)=>renderOwnerRecords(mongoDb,url,res);
+    mongoReplay = require('./mongo-test/hosted-replay.cjs').hostedReplay(mongoDb);
   }
-  const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords});
+  const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay});
   if (mongoClient) app.server.once('close',()=>void mongoClient.close());
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{

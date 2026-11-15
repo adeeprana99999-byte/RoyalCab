@@ -84,7 +84,7 @@ function applySnapshot(r, explicit=false) {
     }
     // The stopped replay can return an identical snapshot on every poll.
     // Leave the Start control mounted until there is new data to draw.
-    if (!explicit && mongoLiveReplay && tab === 'overview' && state?.lgtcReplay &&
+    if (!explicit && mongoLiveReplay() && tab === 'overview' && state?.lgtcReplay &&
         !state.lgtcReplay.running && state.revision === r.state.revision && lastSnapshotAt === r.at) return;
     // Repeated fleet updates can carry the same driver view with a new revision.
     const driverViewUnchanged = user.role === 'driver' && state &&
@@ -143,7 +143,7 @@ function canRefreshWorkspace() {
     !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName);
 }
 async function refresh() {
-  const account=user, r=await api(mongoLiveReplay ? '/api/state?dashboard=1' : '/api/state');
+  const account=user, r=await api(mongoLiveReplay() ? '/api/state?dashboard=1' : '/api/state');
   if(user===account) applySnapshot(r,true);
 }
 function stopConnection() {
@@ -158,7 +158,7 @@ function startStream() {
   // The local Wi-Fi replay shares an HTTP/1.1 origin across all demo panels.
   if (location.port === '4781' && location.pathname === '/owner/') return;
   // Three test panels share the same HTTP/1.1 connection pool.
-  if (location.port === '4783' && ['/owner/', '/driver/', '/james/'].includes(location.pathname)) return;
+  if (config.mongoReplay || location.port === '4783' && ['/owner/', '/driver/', '/james/'].includes(location.pathname)) return;
   stream?.close();
   lastStreamUpdate=Date.now();
   const source=stream=new EventSource(location.pathname.replace(/\/$/,'')+'/api/events');
@@ -187,7 +187,7 @@ async function checkConnection() {
   const request=fallbackRequest=new AbortController();
   const timeout=setTimeout(()=>request.abort(),RECOVERY_INTERVAL_MS);
   try {
-    const r=await api(mongoLiveReplay ? '/api/state?dashboard=1' : '/api/state',undefined,undefined,request.signal);
+    const r=await api(mongoLiveReplay() ? '/api/state?dashboard=1' : '/api/state',undefined,undefined,request.signal);
     if(fallbackRequest!==request) return;
     if(connectionMode!=='live') setConnection('polling');
     applySnapshot(r);
@@ -955,14 +955,15 @@ function fleetMetricTrend(kind, count) {
 }
 let mongoDispatchStarting = false;
 function mongoDispatchControls() {
-  if (!mongoLiveReplay) return '';
+  if (!mongoLiveReplay()) return '';
   const replay = state.lgtcReplay;
   const rides = replay ? state.trips.filter(ride=>ride.demoRunId===replay.runId) : [];
   const progress = replay ? rides.filter(ride=>ride.status==='completed').length+' / '+rides.length+
     ' completed · '+rides.filter(ride=>ride.status==='offered').length+' offers pending · '+replay.held+' in Owner review' : '';
   return '<button type="button" class="btn primary" id="start-mongo-dispatch" '+(replay?.running||mongoDispatchStarting?'disabled':'')+'>'+
     (replay?.running?'Dispatch running':'Start local dispatch')+'</button>'+
-    (replay ? '<p role="status">'+esc(replay.error||progress)+'</p>' : '');
+    (replay ? '<p role="status">'+esc(replay.error||progress)+'</p>' : '') +
+    (config.mongoReplay && replay ? '<button type="button" class="btn small" id="mongo-owner-review">View Owner review</button>' : '');
 }
 function fleetNow() {
   return fleetSource === 'test:'+state?.lgtcReplay?.runId ? state.lgtcReplay.at : lastSnapshotAt || Date.now();
@@ -1003,12 +1004,12 @@ function overview() {
   return '<div class="live-dashboard"><div class="dispatch-command fleet-theme-' + identity.theme + '"><section class="dispatch-toolbar"><div class="dispatch-title"><div><h1>Live fleet</h1>' + dispatchIndicator() + liveFleetProgress() + mongoDispatchControls() + (config.mongoOwnerRecords ? '<a class="btn small" href="/owner/records?show=lgtc_rides">View imported MongoDB records</a>' : '') +
     (location.pathname==='/owner/'&&location.port==='4781'?'<details class="missed-pickup-demo" '+($('#missed-pickup-test')?.open?'open':'')+' id="missed-pickup-test"><summary>Missed pickup test</summary><label><input type="checkbox" id="recover-with-driver"> Bring a test driver online at minute 8</label> <label><input type="checkbox" id="decline-recovery-offer"> Maya declines the first offer</label> <label><input type="checkbox" id="decline-second-recovery-offer"> Maya and James decline</label> <label><input type="checkbox" id="decline-all-recovery-offers"> All three drivers decline</label> <button class="btn small" id="start-missed-pickup">Start recovery test</button><button class="btn small" id="retry-missed-demo" hidden>Retry driver search</button> <button class="btn small" id="accept-missed-demo" hidden>Accept as Jordan</button> <button class="btn small" id="decline-missed-demo" hidden>Decline as Jordan</button><button class="btn small" id="missed-group-test">Test five eligible drivers</button><p id="missed-pickup-progress" role="status">'+esc(missedPickupProgress)+'</p></details>':'') +
     '</div></div><button class="btn primary" id="add-planned-ride">'+icon('plus')+' New booking</button></section>' + summary +
-    (mongoLiveReplay ? '' : '<div class="dispatch-rail">' + dispatchFleetPicker() + '</div>') + '</div>' +
+    (mongoLiveReplay() ? '' : '<div class="dispatch-rail">' + dispatchFleetPicker() + '</div>') + '</div>' +
     (!['device','sample','test:mongo-lgtc-replay'].includes(fleetSource)?'<aside class="queue-test-notice"><p><strong>Test data</strong> · '+esc(identity.label)+' is selected.'+
       (fleetSource==='queue-review'?' Starts with 50 Now, 50 Later and 50 Attention.':'')+'</p>'+
       (fleetSource==='queue-review'?'<button class="btn small" data-queue-review="restart">Start fresh test</button>':'')+
       '<button class="btn small" data-dispatch-fleet="device">Back to Ordinary fleet</button></aside>':'')+
-    (mongoLiveReplay ? '' : '<details class="live-filter-disclosure" '+ (document.querySelector('.live-filter-disclosure')?.open || dispatchSearch || dutyFilter !== 'all' || vehicleFocusId ? 'open' : '') +'><summary>Search &amp; filters</summary><div class="avl-filter-bar"><form id="dispatch-search" class="dispatch-search"><label for="avl-ride-query">Find a ride</label><input id="avl-ride-query" name="query" type="search" maxlength="120" placeholder="Ride, rider, driver or stop" value="'+esc(dispatchSearch)+'"><button class="btn small">Find</button>'+
+    (mongoLiveReplay() ? '' : '<details class="live-filter-disclosure" '+ (document.querySelector('.live-filter-disclosure')?.open || dispatchSearch || dutyFilter !== 'all' || vehicleFocusId ? 'open' : '') +'><summary>Search &amp; filters</summary><div class="avl-filter-bar"><form id="dispatch-search" class="dispatch-search"><label for="avl-ride-query">Find a ride</label><input id="avl-ride-query" name="query" type="search" maxlength="120" placeholder="Ride, rider, driver or stop" value="'+esc(dispatchSearch)+'"><button class="btn small">Find</button>'+
     '</form><div class="avl-fleet-controls"><label>Status<select id="avl-status">' +
     [['all','All vehicles'],['online','Available'],['busy','On a ride'],['offline','Offline'],['gps','Location needs attention']].map(([key,label]) =>
       '<option value="'+key+'" '+(dutyFilter===key?'selected':'')+'>'+label+'</option>').join('') +
@@ -1505,7 +1506,7 @@ function bindImportedFleet() {
   }).catch(error=>{message.textContent=error.message;});
 }
 const mongoOwnerFleet = location.port === '4783' && location.pathname === '/owner/';
-const mongoLiveReplay = mongoOwnerFleet && !new URLSearchParams(location.search).has('acceptance');
+function mongoLiveReplay() { return !!config.mongoReplay || mongoOwnerFleet && !new URLSearchParams(location.search).has('acceptance'); }
 let fleetPageTab = mongoOwnerFleet ? 'records' : 'live';
 function driversPage() {
   const tabs = '<nav class="fleet-page-tabs filter-tabs" aria-label="Drivers and vehicles views">'+
@@ -1762,13 +1763,22 @@ function render() {
   }
   if (tab !== 'overview') bindWorkspacePanels(workspaceView === tab);
   bindMissedPickupDemo();
+  if ($('#mongo-owner-review')) $('#mongo-owner-review').onclick=()=>run(async()=>{
+    const {review}=await api('/api/lgtc-replay');
+    modal('<h2>Owner review · '+review.length+' rides</h2><div class="table-scroll"><table><thead><tr><th>Ride</th><th>Reason</th></tr></thead><tbody>'+
+      review.map(ride=>'<tr><td>'+esc(ride.reference)+'</td><td>'+esc(ride.reasons.join(', '))+'</td></tr>').join('')+
+      '</tbody></table></div>');
+  });
   if ($('#start-mongo-dispatch')) $('#start-mongo-dispatch').onclick=event=>run(async()=>{
     if (mongoDispatchStarting) return;
     mongoDispatchStarting=true;
     event.currentTarget.disabled=true;
     try {
-      const response=await fetch('/owner/dispatch-plan?view=dashboard',{method:'POST'});
-      if (!response.ok) throw Error(await response.text());
+      if (config.mongoReplay) await api('/api/lgtc-replay',{});
+      else {
+        const response=await fetch('/owner/dispatch-plan?view=dashboard',{method:'POST'});
+        if (!response.ok) throw Error(await response.text());
+      }
       await refresh();
     } finally {
       mongoDispatchStarting=false;

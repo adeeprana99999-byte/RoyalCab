@@ -21,10 +21,10 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer, ownerRecords } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer, ownerRecords, mongoReplay } = {}) {
   const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
   const privateDemo=hostedDemo&&!publicDemo;
-  if (ownerRecords && !privateDemo) throw Error('MongoDB Owner records require private hosted mode.');
+  if ((ownerRecords || mongoReplay) && !privateDemo) throw Error('MongoDB Owner records require private hosted mode.');
   if (sheetFile && (hostedDemo || pilotConfig || roadMatrix || !dbPath)) throw Error('Sheet testing requires a separate local database.');
   if (hostedDemo && (dbPath!==':memory:' || roadMatrix || pilotConfig)) {
     throw Error('The hosted demo needs an in-memory demo database.');
@@ -305,6 +305,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       const photos = new Map(fleetDb.prepare('SELECT driver_id, version FROM driver_profile_photos').all().map(row=>[row.driver_id,row.version]));
       for (const driver of state.drivers) driver.profilePhotoVersion = photos.get(driver.id);
       if(roadRouting) DispatchReview.projectForecasts(state,roadRouting,now);
+      mongoReplay?.project(state);
       state.dispatchHealth={...dispatchHealth,routing:roadRouting?.health() || {mode:'demo',status:'simulated'}};
     }
     return state;
@@ -475,7 +476,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoReplay:!!mongoReplay&&!needsPreviewAccess&&user?.role==='owner',mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
@@ -843,6 +844,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           s=load(); trip=s.trips.find(t=>t.id===reviewRoute[1]);
         }
         return json(res,200,DispatchReview.inspect(s,trip,clock()));
+      }
+      if (mongoReplay && url.pathname === '/api/lgtc-replay' && ['GET','POST'].includes(req.method)) {
+        requireRole(user,'owner');
+        if (req.method === 'GET') return json(res,200,{review:mongoReplay.review()});
+        await mongoReplay.start();
+        publish();
+        return json(res,200,{ok:true});
       }
       if (url.pathname === '/api/state' && req.method === 'GET') return json(res, 200, { state: clientState(user), at: clock() });
       if(url.pathname==='/api/settings'&&req.method==='POST'){
