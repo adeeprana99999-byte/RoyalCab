@@ -13,6 +13,7 @@ function conflicts(s,driver,t,places,now=Date.now()){
 }
 function reserve(s,t,driverId,places,now=Date.now()){
   Operations.normalize(s);const d=s.drivers.find(d=>d.id===driverId);if(!d||!t)throw Error('Trip or driver not found');
+  if (d.driverDisabled || d.vehicleDisabled) throw Error('Driver or vehicle is disabled');
   const lead=Operations.settings(s).dispatchLeadMinutes;
   if(t.status!=='awaiting_driver'||t.driverId||current(s,t.id))throw Error('This ride is already assigned, offered or reserved');
   if(t.pickupAt<=now+lead*60000||t.pickupAt>now+7*86400000)throw Error('Reserve rides outside the dispatch window and within the next 7 days');
@@ -40,3 +41,4 @@ function scheduled(s,driverId,places,now=Date.now(),page=1){
   return {page:selected,pages,total:rows.length,trips:rows.slice((selected-1)*25,selected*25).map(t=>({id:t.id,reference:t.reference,pickup:t.pickup,destination:t.destination,pickupAt:t.pickupAt,passengers:t.passengers,requirements:t.requirements,reservation:current(s,t.id)||null,window:window(t,s,places),suitable:d.seats>=t.passengers&&t.requirements.every(r=>d.capabilities.includes(r))}))};
 }
 module.exports={current,window,reserve,release,scheduled,conflicts,resourceBusy,sameVehicle};
+

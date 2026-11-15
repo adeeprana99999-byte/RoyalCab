@@ -52,11 +52,13 @@ function identity(name, phone) {
 }
 function instructionPolicy(notes) {
   let accessible = false;
-  let needsReview = false;
-  for (const note of notes) {
+  const reviewReasons = new Set();
+  for (const note of notes.flatMap(note => note.split(/\/\/+/))) {
     const text = note.trim().toLowerCase().replace(/[.!]+$/, '').trim();
+    if (!text) continue;
     if (/^(?:please )?(?:call|text)(?: (?:upon|on) arrival| before pickup| when you arrive)?$/.test(text) ||
         /^text\s*[-:]?\s*(?:yes|no)$/.test(text) ||
+        /^(?:cell\s*[-:]?\s*texts?(?:\s*[-:]?\s*yes)?|calls only|no texts?|no gate code|contact patient upon arrival at pick-up location)$/.test(text) ||
         /^(?:please )?use (?:the )?(?:front|side|rear|back|main) (?:door|entrance)$/.test(text)) continue;
     const mobility = text.replace(/-/g,' ');
     if (/\b(?:electric|power|motorized) wheelchair\b/.test(mobility) && !/\b(?:no|not|without)\b/.test(mobility)) accessible = true;
@@ -64,9 +66,14 @@ function instructionPolicy(notes) {
       accessible = true;
       continue;
     }
-    needsReview = true;
+    if (/\bwill[ -]call\b/.test(text)) reviewReasons.add('Confirm will-call instructions');
+    else if (/\b(?:wheel\s*chair|[emp]?wc|w\/c|ramp|lift|transfer)\b/.test(text)) reviewReasons.add('Verify mobility equipment, boarding and vehicle fit');
+    else if (/\b(?:escort|esc|child|car seat|people in total)\b/.test(text)) reviewReasons.add('Confirm companions, occupied seats or child restraint');
+    else if (/\b(?:door to door|hand to hand|staff|unattended|steps)\b/.test(text)) reviewReasons.add('Confirm pickup assistance or handoff requirements');
+    else if (/^(?:see\s+)?rt$/.test(text)) reviewReasons.add('Confirm linked return instructions');
+    else reviewReasons.add('Interpret remaining workbook instructions');
   }
-  return { accessible, needsReview };
+  return { accessible, needsReview: reviewReasons.size > 0, reviewReasons: [...reviewReasons] };
 }
 function detect(filename, base64, customerKey, includeDispatchSource = false) {
   if (!/\.(csv|xlsx)$/i.test(filename || '') || typeof base64 !== 'string') return null;
@@ -295,6 +302,15 @@ function dispatchCandidates(plan, source, state, places, validate, now, pilot) {
   }
   return {ready,held,existing};
 }
+function driverShift(driver, serviceDate) {
+  const shift = driver.availability?.[serviceDate];
+  if (shift) return shift;
+  const recurring = driver.recurringShift;
+  if (!recurring?.days.includes(new Date(serviceDate + 'T12:00:00Z').getUTCDay())) return undefined;
+  const startAt = easternPickup(serviceDate, recurring.start);
+  const endAt = easternPickup(serviceDate, recurring.end);
+  return startAt && endAt && endAt > startAt ? {start:recurring.start,end:recurring.end,startAt,endAt} : undefined;
+}
 function namedFleet(driverIds, roster, serviceDate) {
   if (!Array.isArray(driverIds) || driverIds.length > 500 || new Set(driverIds).size !== driverIds.length) {
     throw Error('Select each available driver once.');
@@ -303,10 +319,13 @@ function namedFleet(driverIds, roster, serviceDate) {
   return driverIds.map(driverId => {
     const driver = roster.find(d => d.id === driverId);
     if (!driver) throw Error('One of the selected drivers is no longer in this fleet.');
+    if (driver.driverDisabled || driver.vehicleDisabled) throw Error('Remove disabled drivers and vehicles from the selected fleet.');
     if (selected.some(other => sameVehicle(driver,other))) throw Error('Select only one driver per vehicle for this date.');
     selected.push(driver);
+    const shift = driverShift(driver,serviceDate);
     return { driverId, label:driver.name, vehicle:driver.vehicle, seats:driver.seats,
-      accessible:driver.capabilities.includes('wheelchair'), shift:driver.availability?.[serviceDate], trips:[] };
+      accessible:driver.capabilities.includes('wheelchair'),
+      shift:shift ?? ((driver.rosterManaged || driver.rosterServiceDate) ? {unavailable:true} : undefined), trips:[] };
   });
 }
 function serviceProfile(code, profile) {
@@ -352,8 +371,10 @@ function uploadStaffing(rows, serviceDate, roster, buffer) {
   const atPeak = [];
   let driversWithoutHours = 0;
   if (peak.at !== null) for (const driver of roster) {
-    const shift = driver.availability?.[serviceDate];
+    if (driver.driverDisabled || driver.vehicleDisabled) continue;
+    const shift = driverShift(driver,serviceDate);
     if (!shift) driversWithoutHours++;
+    if (!shift && (driver.rosterManaged || driver.rosterServiceDate)) continue;
     if (shift?.unavailable || shift && (peak.at < shift.start || peak.at >= shift.end)) continue;
     if (!atPeak.some(other => sameVehicle(other,driver))) atPeak.push(driver);
   }
@@ -389,7 +410,7 @@ function fleetDemand(rows, ready, vehicles, buffer, held) {
     groups,
   };
 }
-function plan(batch, input, { roster = [], preferences = new Map() } = {}) {
+function plan(batch, input, { roster = [], preferences = new Map(), allowEmptyRoster = false } = {}) {
   if (!batch.dates.includes(input.serviceDate)) throw Error('Choose a service date in this import.');
   const buffer = int(input.buffer, 0, 180, 'Between-trip buffer');
   const named = input.driverIds !== undefined;
@@ -404,7 +425,7 @@ function plan(batch, input, { roster = [], preferences = new Map() } = {}) {
     fleet[key] = count;
     for (let i = 1; i <= count; i++) vehicles.push({ label: label + ' ' + i, seats, accessible, trips: [] });
   }
-  if (!vehicles.length) throw Error(named ? 'Select at least one driver available for this date.' : 'Enter at least one vehicle.');
+  if (!vehicles.length && !(named && allowEmptyRoster)) throw Error(named ? 'Select at least one driver available for this date.' : 'Enter at least one vehicle.');
   const pickupOrder = row => row.review?.start ?? (row.start || Infinity);
   const rows = effectiveRows(batch).filter(r => r.serviceDate === input.serviceDate)
     .sort((a, b) => pickupOrder(a) - pickupOrder(b) || a.row - b.row);
@@ -420,7 +441,7 @@ function plan(batch, input, { roster = [], preferences = new Map() } = {}) {
     const p = profiles.get(row.code);
     let reasons = [...row.issues], seats;
     if (row.hasNotes && row.instructionPolicy?.needsReview !== false && !row.review?.notesReviewed && input.notesReviewed !== true) {
-      reasons.push('Review source instructions');
+      reasons.push(...(row.instructionPolicy?.reviewReasons || ['Review source instructions']));
     }
     const mode = row.review?.mode || (row.instructionPolicy?.accessible ? 'accessible' : p?.mode);
     if (row.review?.mode) seats = row.review.seats;
@@ -567,4 +588,6 @@ function plan(batch, input, { roster = [], preferences = new Map() } = {}) {
       rideMinutes:best.cars.reduce((total,car) => total + car.trips.reduce((minutes,ride) => minutes + ride.end - ride.start,0),0) } };
 }
 
-module.exports = { detect, plan, reviewLeg, scheduleView, identity, automationSettings, dispatchCandidates, easternPickup, uploadStaffing };
+module.exports = { detect, plan, reviewLeg, scheduleView, identity, automationSettings, dispatchCandidates, easternPickup, uploadStaffing, driverShift };
+
+

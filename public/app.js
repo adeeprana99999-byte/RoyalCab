@@ -1,3 +1,11 @@
+function requestId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
+}
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icons = { grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z', car: 'M5 17H3V10l3-6h12l3 6v7h-2 M5 17h14 M6 10h12 M6 14h1 M17 14h1 M5 17v3 M19 17v3', map: 'M3 5l6-2 6 2 6-2v16l-6 2-6-2-6 2z M9 3v16 M15 5v16', upload: 'M12 16V3 M7 8l5-5 5 5 M3 15v6h18v-6', users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M20 21v-2a4 4 0 0 0-3-4 M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M17 3a4 4 0 0 1 0 8', clock: 'M12 8v5l3 2 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0', arrow: 'M5 12h14 M13 6l6 6-6 6', bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4', check: 'M5 12l4 4L19 6', logout: 'M9 4H3v16h6 M10 12h11 M16 7l5 5-5 5', bolt: 'M13 2L4 14h7l-1 8 10-13h-7z', plus: 'M12 5v14 M5 12h14', flag: 'M5 21V3 M5 4c5-5 9 5 14 0v10c-5 5-9-5-14 0', search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0' };
@@ -18,7 +26,7 @@ let reportGroup='driver',reportData=null,reportFrom='',reportTo='',settingsDirty
 let boardPage = 1, tripDataScope = 'all', bookingOrder = 'next';
 let user, config, state, tab = 'overview', loginTab = 'owner', stream, connected = false, search = '', filter = 'all', batch, loginPhone = '', loginName = '', codeSent = false;
 const demoLoginRole = new URLSearchParams(location.search).get('demo');
-let connectionMode='connecting', connectionTimer, fallbackRequest, lastStreamUpdate=0, lastSnapshotAt=0, requestFreshGps;
+let connectionMode='connecting', connectionTimer, fallbackRequest, lastStreamUpdate=0, lastSnapshotAt=0, snapshotReceivedAt=0, requestFreshGps;
 const STREAM_STALE_MS=22000, RECOVERY_INTERVAL_MS=4000;
 const active = t => !['completed', 'cancelled'].includes(t.status);
 const labels = { pooled:'Shared run planned', awaiting_driver: 'Awaiting driver', needs_reassignment: 'Needs reassignment', offered: 'Offer pending', accepted: 'Accepted', heading_to_pickup: 'To pickup', arrived: 'At pickup', onboard: 'Onboard', completed: 'Completed', cancelled: 'Cancelled', online: 'Available', busy: 'On trip', offline: 'Offline', valid: 'Validated', preview: 'Preview only', imported: 'Imported' };
@@ -28,7 +36,8 @@ function badge(status, red = false) { return `<span class="badge ${red ? 'danger
 function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = 'show' + (error ? ' error' : ''); clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.className = ''; }, 6500); }
 async function api(url, body, key, signal) {
   const account=user;
-  const res = await fetch(url, { signal, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) } : {}, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const rolePrefix = /^\/(owner|driver|james|sofia|backup|retry|fleet-test-[0-9]+|customer)\/$/.test(location.pathname) ? location.pathname.slice(0,-1) : "";
+  const res = await fetch(rolePrefix + url, { signal, method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) } : {}, ...(body ? { body: JSON.stringify(body) } : {}) });
   const data = await res.json();
   if (!res.ok) {
     if (res.status===401 && account && user===account) {
@@ -39,36 +48,102 @@ async function api(url, body, key, signal) {
   }
   return data;
 }
+let interactionPointer = null;
+let interactionRenderPending = false;
+let interactionReleaseTimer;
+const expandedDriverRides=new Set();
+document.addEventListener('pointerdown', event => {
+  if (!event.isPrimary || event.button !== 0 || !(event.target instanceof Element)) return;
+  const ownerControl = user?.role === 'owner' && event.target.closest('button, a, summary, input, select, textarea, label, [role="button"]');
+  const driverControl = user?.role === 'driver' && event.target.closest('button[data-action][data-trip], button[data-driver-ride-actions], [data-driver-route]');
+  if (ownerControl || driverControl) {
+    clearTimeout(interactionReleaseTimer);
+    interactionPointer = event.pointerId;
+  }
+}, true);
+function releaseWorkspaceInteraction(event) {
+  if (event.pointerId !== interactionPointer) return;
+  // Keep the action button mounted until the browser dispatches its click.
+  interactionReleaseTimer = setTimeout(() => {
+    interactionPointer = null;
+    if (!interactionRenderPending) return;
+    interactionRenderPending = false;
+    if (user && canRefreshWorkspace()) render();
+  }, event.type === 'pointerup' && event.pointerType === 'touch' ? 350 : 0);
+}
+window.addEventListener('pointerup', releaseWorkspaceInteraction, true);
+window.addEventListener('pointercancel', releaseWorkspaceInteraction, true);
+
+
 function applySnapshot(r, explicit=false) {
     if (!user) return;
     if (state && (r.state.revision<state.revision ||
         r.state.revision===state.revision && r.at<lastSnapshotAt)) {
-      if(explicit) render();
+      if (explicit && interactionPointer === null && !$('dialog[open]')) render();
       return;
     }
+    // The stopped replay can return an identical snapshot on every poll.
+    // Leave the Start control mounted until there is new data to draw.
+    if (!explicit && mongoLiveReplay && tab === 'overview' && state?.lgtcReplay &&
+        !state.lgtcReplay.running && state.revision === r.state.revision && lastSnapshotAt === r.at) return;
+    // Repeated fleet updates can carry the same driver view with a new revision.
+    const driverViewUnchanged = user.role === 'driver' && state &&
+      JSON.stringify({...state, revision:0}) === JSON.stringify({...r.state, revision:0});
     const previous=new Set((state?.offers||[]).filter(o=>o.status==='pending').map(o=>o.id));
     const previousTrips = user.role==='owner' && state ? new Map(state.trips.map(trip => [trip.id,trip.status])) : null;
     const driverRide=user.role==='driver'&&state?.trips.find(t=>t.driverId===user.driverId&&active(t));
     const previousDriver=state?.trips.find(t=>t.id===focusedRideId)?.driverId;
+    const previousReplay = state?.lgtcReplay;
     state=r.state;
+    if (state.lgtcReplay && (!previousReplay || !previousReplay.running && state.lgtcReplay.running)) {
+      changeFleetSource('test:' + state.lgtcReplay.runId);
+      dispatchView = 'now';
+      dispatchPage = 1;
+      mapPriorityFilter = 'now';
+    }
     if(user.role==='owner'&&focusedRideId){
       const driverId=state.trips.find(t=>t.id===focusedRideId)?.driverId;
       if(driverId!==previousDriver) selectedDriverId=driverId||null;
     }
     lastSnapshotAt=r.at;
-    if(user.role==='owner'&&!fleetSourceInitialized){const savedSource=localStorage.getItem('prolift-fleet-source');fleetSource=initialFleetSource(savedSource);selectFirstQueue();fleetSourceInitialized=true;}
-    if (user?.role === 'owner' && tab === 'imports') updateLgtcLiveStatus();
-    if(user?.role==='driver'&&(state.offerUpdates||[]).some(o=>previous.has(o.id)))toast('This offer closed: another driver accepted or dispatch changed the offer.');
+    snapshotReceivedAt=performance.now();
+    if(user.role==='owner'&&!fleetSourceInitialized){const savedSource=localStorage.getItem('prolift-fleet-source');fleetSource=state.lgtcReplay ? 'test:'+state.lgtcReplay.runId : initialFleetSource(savedSource);selectFirstQueue();fleetSourceInitialized=true;}
+    if (user?.role === 'owner' && ['imports','trip-sources'].includes(tab)) updateLgtcLiveStatus();
+    if(user?.role==='driver'){
+      const closed=(state.offerUpdates||[]).filter(o=>previous.has(o.id));
+      if(closed.some(o=>o.status==='taken'))toast('This ride was already taken.');
+      else if(closed.length)toast('Dispatch changed this offer.');
+    }
     if(driverRide&&!state.trips.some(t=>t.id===driverRide.id)) toast('This ride is no longer assigned to you. Check with dispatch before continuing.',true);
     if (previousTrips) {
       const completed = state.trips.filter(trip => trip.status === 'completed' && previousTrips.get(trip.id) !== 'completed');
       if (completed.length) updateOwnerAfterCompletion(completed);
     }
+    if (!explicit && driverViewUnchanged) return;
+    // Keep a revealed offer actionable while background updates leave it pending.
+    if (!explicit && user.role === 'driver') {
+      const accept = $('.driver-route-actions:not([hidden]) button[data-action="accept"]');
+      if (accept && state.offers.some(offer => offer.id === accept.dataset.offer && offer.status === 'pending')) return;
+    }
+    if (interactionPointer !== null) {
+      interactionRenderPending = true;
+      return;
+    }
     // Preserve active form input and modal focus while updates continue in memory.
-    if (explicit || !['imports','lgtc-settings'].includes(tab) && !mapInteracting && !(tab==='settings'&&settingsDirty) && !$('dialog[open], .dispatch-planning[open]') && !document.activeElement?.closest('form') && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) render();
+    if (explicit && user.role === 'driver' && $('dialog[open]')) return;
+    if (explicit || canRefreshWorkspace()) render();
+}
+function canRefreshWorkspace() {
+  return !(tab==='drivers' && fleetPageTab==='records') &&
+    !['imports','trip-sources','lgtc-settings','fleet-import'].includes(tab) &&
+    !mapInteracting && !$('.fleet-panel-resize:active') && !$('#trip-results [data-bulk-trip]:checked') &&
+    !(tab==='settings' && settingsDirty) &&
+    !$('dialog[open], .dispatch-planning[open], #imported-fleet details[open]') &&
+    !document.activeElement?.closest('form') &&
+    !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName);
 }
 async function refresh() {
-  const account=user, r=await api('/api/state');
+  const account=user, r=await api(mongoLiveReplay ? '/api/state?dashboard=1' : '/api/state');
   if(user===account) applySnapshot(r,true);
 }
 function stopConnection() {
@@ -80,12 +155,16 @@ function stopConnection() {
   setConnection('connecting');
 }
 function startStream() {
+  // The local Wi-Fi replay shares an HTTP/1.1 origin across all demo panels.
+  if (location.port === '4781' && location.pathname === '/owner/') return;
+  // Three test panels share the same HTTP/1.1 connection pool.
+  if (location.port === '4783' && ['/owner/', '/driver/', '/james/'].includes(location.pathname)) return;
   stream?.close();
   lastStreamUpdate=Date.now();
-  const source=stream=new EventSource('/api/events');
+  const source=stream=new EventSource(location.pathname.replace(/\/$/,'')+'/api/events');
   source.onerror=()=>{
     if(stream!==source) return;
-    if(connectionMode==='checking') return;
+    if(connectionMode==='polling') return;
     setConnection(navigator.onLine?'reconnecting':'offline');
     if(navigator.onLine) void checkConnection();
   };
@@ -98,21 +177,22 @@ function startStream() {
 }
 async function checkConnection() {
   if(!user) return;
+
   if(!navigator.onLine){setConnection('offline');return;}
   if(Date.now()-lastStreamUpdate>=STREAM_STALE_MS){
-    if(connectionMode!=='checking') setConnection('reconnecting');
+    if(connectionMode!=='polling') setConnection('reconnecting');
     startStream();
   }
-  if(connected || fallbackRequest || connectionMode==='connecting') return;
+  if(connectionMode==='live' || fallbackRequest) return;
   const request=fallbackRequest=new AbortController();
   const timeout=setTimeout(()=>request.abort(),RECOVERY_INTERVAL_MS);
   try {
-    const r=await api('/api/state',undefined,undefined,request.signal);
+    const r=await api(mongoLiveReplay ? '/api/state?dashboard=1' : '/api/state',undefined,undefined,request.signal);
     if(fallbackRequest!==request) return;
-    if(!connected) setConnection('checking');
+    if(connectionMode!=='live') setConnection('polling');
     applySnapshot(r);
   } catch {
-    if(fallbackRequest===request && !connected) setConnection(navigator.onLine?'reconnecting':'offline');
+    if(fallbackRequest===request && connectionMode!=='live') setConnection(navigator.onLine?'reconnecting':'offline');
   } finally {
     clearTimeout(timeout);
     if(fallbackRequest===request) fallbackRequest=null;
@@ -123,16 +203,17 @@ function listen() {
   if(navigator.onLine) startStream();
   else setConnection('offline');
   connectionTimer=setInterval(checkConnection,RECOVERY_INTERVAL_MS);
+  if (location.port === '4783' && !stream) void checkConnection();
 }
 function setConnection(mode) {
   connectionMode=mode;
-  connected=mode==='live';
+  connected=mode==='live'||mode==='polling';
   updateConnection();
 }
 function updateConnection() {
   const el=$('#connection');
   if(!el) return;
-  const label={live:'Live connection',connecting:'Connecting…',reconnecting:'Reconnecting · last known',offline:'Offline · last known',checking:'Live interrupted · refreshing'}[connectionMode];
+  const label={live:'Live connection',connecting:'Connecting…',reconnecting:'Reconnecting · last known',offline:'Offline · last known',polling:'Updating every 4 seconds'}[connectionMode];
   if(el.textContent!==label) el.textContent=label;
   el.className=connected?'connection':'connection reconnect';
   el.setAttribute('role','status');
@@ -194,7 +275,7 @@ function loginContent() {
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
-async function enter(u) {stopConnection();state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function enter(u) {stopConnection();state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 function bindLogin() {
   document.querySelectorAll('[data-login-tab]').forEach(el => el.onclick = () => { loginTab = el.dataset.loginTab; codeSent = false; renderLogin(); });
   if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'owner' })).user));
@@ -225,15 +306,30 @@ function shell(content) {
   const retainedMap=document.querySelector('#geo-fleet-map');
 
   const owner = user.role === 'owner';if(owner){ownerShell(content,retainedMap);return;}
-  const nav = owner ? [['overview', 'map', 'Live fleet'], ['readiness','check','Pickup readiness'], ['trips', 'car', 'All trips'], ['schedule', 'clock', 'Upcoming rides'], ['imports', 'upload', 'Import trips'], ['drivers', 'users', 'Drivers'], ['activity', 'clock', 'Activity'], ['reports','grid','Reports'], ['messages','bell','Messages'], ['help','bell','Help requests'], ['settings','grid','Settings']] : user.role === 'driver' ? [['work', 'car', 'My work'], ['scheduled','clock','Scheduled rides'], ['help','bell','Help requests'], ['history', 'clock', 'Trip history']] : [['mytrips', 'car', 'My trips'], ['help','bell','Help requests'], ['messages','bell','Ride updates'], ['history', 'clock', 'Trip history']];
-  const titles = {readiness: 'Pickup readiness',scheduled:'Scheduled rides',help:'Help requests', overview: 'Live fleet', trips: 'All trips', schedule: 'Upcoming rides', fleet: 'Live fleet', imports: 'Import planned trips', drivers: 'Your drivers', activity: 'Activity log', work: 'Your driving day', mytrips: 'Your trips', history: 'Trip history', reports:'Reports', messages:'Customer messages', settings:'Settings' };
-  $('#app').innerHTML = `<a class="skip-link" href="#main-content">Skip to main content</a><div class="app-layout role-${esc(user.role)}"><aside class="sidebar"><a class="brand" href="/">${icon('bolt')} ProLift</a><div class="workspace-label">${owner ? 'OWNER WORKSPACE' : user.role === 'driver' ? 'DRIVER WORKSPACE' : 'CUSTOMER WORKSPACE'}</div><nav>${nav.map(([id, i, label]) => `<button data-nav="${id}" class="nav-item ${tab === id ? 'active' : ''}" ${tab===id?'aria-current="page"':''}>${icon(i)}${label}${id === 'trips' && state.trips.some(t => t.redFlag) ? '<span class="nav-alert">!</span>' : ''}</button>`).join('')}</nav>${quickNavigation(nav)}<label class="mobile-navigation">Workspace<select id="workspace-navigation" aria-label="Open workspace section">${nav.map(([id,,label])=>`<option value="${id}" ${tab===id?'selected':''}>${label}</option>`).join('')}</select></label><div class="sidebar-bottom"><div class="simulation">${icon('bolt')}<div><strong>Demo environment</strong><span>Dummy GPS, SMS & routing</span></div></div><div class="profile"><span class="avatar">${esc(user.name[0])}</span><div><strong>${esc(user.name)}</strong><span>${owner ? 'Fleet owner' : user.role === 'driver' ? 'Driver' : 'Customer'}</span></div><button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">${icon('logout')}</button></div></div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><span>Workspace <span class="slash">/</span> <strong>${titles[tab]}</strong></span><div><span id="connection" class="connection">${connected ? 'Live connection' : 'Connecting…'}</span><span class="today">${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span></div></header><div class="page-content ${user.role === 'owner' && tab === 'overview' ? 'fleet-home' : ''}">${content}</div><footer>ProLift operations <span>PHONE GPS OPT-IN · SAMPLE FLEET SEPARATE · LOCAL DATA</span></footer></main></div><dialog id="modal"></dialog>`;
+  const nav = user.role === 'driver' ? [['work', 'car', 'My work'], ['vehicle','car','Vehicle'], ['driver-messages','bell','Messages'], ['scheduled','clock','Scheduled rides'], ['history', 'clock', 'Trip history']] : [['mytrips', 'car', 'My trips'], ['help','bell','Help requests'], ['messages','bell','Ride updates'], ['history', 'clock', 'Trip history']];
+  const titles = {readiness: 'Pickup readiness',scheduled:'Scheduled rides',help:'Help requests', overview: 'Live fleet', trips: 'All trips', schedule: 'Upcoming rides', fleet: 'Live fleet', imports: 'Import planned trips', drivers: 'Your drivers', activity: 'Activity log', work: 'Your driving day', vehicle:'Vehicle', 'driver-messages':'Messages', mytrips: 'Your trips', history: 'Trip history', reports:'Reports', messages:'Customer messages', settings:'Settings' };
+  $('#app').innerHTML = `<a class="skip-link" href="#main-content">Skip to main content</a><div class="app-layout rider-driver-portal role-${esc(user.role)}"><aside class="sidebar"><a class="brand" href="/">${icon('bolt')} RoyalCab</a><div class="workspace-label">${owner ? 'OWNER WORKSPACE' : user.role === 'driver' ? 'DRIVER WORKSPACE' : 'CUSTOMER WORKSPACE'}</div><nav>${nav.map(([id, i, label]) => `<button data-nav="${id}" class="nav-item ${tab === id ? 'active' : ''}" ${tab===id?'aria-current="page"':''}>${icon(i)}${label}${driverReplyBadge(id)}${id === 'trips' && state.trips.some(t => t.redFlag) ? '<span class="nav-alert">!</span>' : ''}</button>`).join('')}</nav>${quickNavigation(nav)}<label class="mobile-navigation">Workspace<select id="workspace-navigation" aria-label="Open workspace section">${nav.map(([id,,label])=>`<option value="${id}" ${tab===id?'selected':''}>${label}</option>`).join('')}</select></label><div class="sidebar-bottom"><div class="simulation">${icon('bolt')}<div><strong>Demo environment</strong><span>Dummy GPS, SMS & routing</span></div></div><div class="profile"><span class="avatar">${esc(user.name[0])}</span><div><strong>${esc(user.name)}</strong><span>${owner ? 'Fleet owner' : user.role === 'driver' ? 'Driver' : 'Customer'}</span></div><button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">${icon('logout')}</button></div></div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><span>Workspace <span class="slash">/</span> <strong>${titles[tab]}</strong></span><div><span id="connection" class="connection">${connected ? 'Live connection' : 'Connecting…'}</span><span class="today">${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span></div></header><div class="page-content ${user.role === 'owner' && tab === 'overview' ? 'fleet-home' : ''}">${content}</div><footer>RoyalCab <span>Local demo · Simulated dispatch</span></footer></main></div><dialog id="modal"></dialog>`;
   document.querySelectorAll('[data-nav]').forEach(el => el.onclick = () => { tab = el.dataset.nav; search = ''; filter = 'all'; render(); });
   $('#logout').onclick = () => run(async () => { if(user.role==='driver'&&gpsWatch!==null)await stopPhoneTracking();await api('/api/logout', {}); stopConnection(); user = null; codeSent = false; renderLogin(); });
   const newMap=document.querySelector('#geo-fleet-map');if(retainedMap&&newMap&&geoMap){newMap.replaceWith(retainedMap);}else if(geoMap){geoMap.remove();geoMap=null;geoMarkers=null;}
   bindActions();
 }
-function quickNavigation(nav){const ids=user.role==='owner'?['overview','readiness','trips','schedule']:user.role==='driver'?['work','scheduled','history','help']:['mytrips','messages','history','help'];return '<div class="quick-nav" aria-label="Quick workspace navigation">'+nav.filter(([id])=>ids.includes(id)).map(([id,i,label])=>'<button data-nav="'+id+'" class="'+(tab===id?'active':'')+'" '+(tab===id?'aria-current="page"':'')+'>'+icon(i)+esc(label)+'</button>').join('')+'</div>';}
+function driverReplyBadge(id){
+  if(user.role!=='driver'||id!=='driver-messages')return '';
+  const key='royalcab.driver-replies.'+user.driverId;
+  let read={};
+  try{read=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch{}
+  let unread=0;
+  for(const request of state.supportRequests||[]){
+    if(!request.ownerReply)continue;
+    const version=JSON.stringify([request.updatedAt,request.ownerReply]);
+    if(tab==='driver-messages')read[request.id]=version;
+    else if(read[request.id]!==version)unread++;
+  }
+  if(tab==='driver-messages'){try{localStorage.setItem(key,JSON.stringify(read));}catch{}}
+  return unread?'<span class="nav-alert" aria-label="'+unread+' unread replies">'+unread+'</span>':'';
+}
+function quickNavigation(nav){const ids=user.role==='owner'?['overview','readiness','trips','schedule']:user.role==='driver'?['work','vehicle','driver-messages','scheduled','history']:['mytrips','messages','history','help'];return '<div class="quick-nav" aria-label="Quick workspace navigation">'+nav.filter(([id])=>ids.includes(id)).map(([id,i,label])=>'<button data-nav="'+id+'" class="'+(tab===id?'active':'')+'" '+(tab===id?'aria-current="page"':'')+'>'+icon(i)+esc(label)+driverReplyBadge(id)+'</button>').join('')+'</div>';}
 
 function scenarioTrips(){return state.fleetScenario?state.trips.filter(t=>t.demoRunId===state.fleetScenario.runId):[];}
 function scenarioControls(){const r=state.fleetScenario,trips=scenarioTrips(),completed=trips.filter(t=>t.status==='completed').length;return '<section class="scenario-controls"><div><span class="eyebrow">CHARLOTTE FLEET SIMULATION</span><h2>4 cars. 6 trips. Watch dispatch work.</h2><p>'+(r?esc(r.status)+' · '+completed+' of 6 rides completed.':'Nearest eligible driver → offer → simulated acceptance → pickup → drop-off → available again.')+'</p><small>Dummy coordinates, automatic test-driver responses and accelerated travel. No real customers or SMS.</small></div><div class="card-actions"><button class="btn primary" data-scenario-action="start">'+(r?'Restart Charlotte fleet':'Run Charlotte fleet')+'</button>'+(r?.status==='running'?'<button class="btn" data-scenario-action="stop">Stop fleet test</button>':'')+'</div></section>';}
@@ -243,7 +339,7 @@ function drawScenarioRoutes(){if(!geoScenarioRoutes)return;geoScenarioRoutes.cle
 function trackingReplayControls(){const r=state.trackingReplay,active=r&&['running','paused'].includes(r.status);return '<section class="tracking-test-panel"><div><span class="eyebrow">TRACKING TEST · NO PHONE REQUIRED</span><h2>Follow the test car in Charlotte.</h2><p>'+(r?'Replay '+esc(r.status)+' · '+Math.round(r.progress*100)+'% · '+r.sequence+' validated readings.':'Press Start tracking test. Look for the large car labeled TEST CAR on the map below.')+'</p></div><div class="card-actions"><button class="btn primary" data-replay-action="start">'+(r?'Restart tracking test':'Start tracking test')+'</button>'+(active?'<button class="btn" data-replay-action="'+(r.status==='paused'?'resume':'pause')+'">'+(r.status==='paused'?'Resume test':'Pause test')+'</button><button class="btn" data-replay-action="stop">Stop test</button>':'')+'</div>'+(r?'<progress max="1" value="'+r.progress+'" aria-label="Coordinate replay progress"></progress>':'')+'</section>';}
 
 function operationsSummary(){const fleet=ProLiftBoard.fleet(state).filter(i=>matchesFleetSource(i.driver)),trips=state.trips.filter(t=>!t.demoRunId),attention=trips.filter(t=>ProLiftBoard.group(t)==='attention').length;return '<div class="operations-summary">'+[['Available drivers',fleet.filter(d=>d.status==='available').length,'Ready for a pickup','car'],['Active rides',state.trips.filter(t=>t.driverId&&active(t)&&fleet.some(i=>i.driver.id===t.driverId)).length,'Accepted and in progress','map'],['Upcoming pickups',trips.filter(t=>active(t)&&t.pickupAt>=Date.now()).length,'Scheduled ahead','clock'],['Needs attention',attention,'Review dispatch exceptions','flag']].map(([label,value,note,i])=>'<article class="operations-metric '+(i==='flag'&&value?'attention':'')+'"><div>'+label+icon(i)+'</div><strong>'+value+'</strong><small>'+note+'</small></article>').join('')+'</div>';}
-function heading(eyebrow, title, subtitle, buttons = '') { return `<section class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${subtitle}</p></div><div class="heading-actions">${buttons}</div></section>`; }
+function heading(eyebrow, title, subtitle, buttons = '') { if (user?.role === 'owner') return ownerPageHeading(title,subtitle,buttons); return `<section class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${subtitle}</p></div><div class="heading-actions">${buttons}</div></section>`; }
 function stats() {
   const cards = [['Planned trips', state.trips.length, 'All trips in this workspace', 'car'], ['Awaiting a driver', state.trips.filter(t => ['awaiting_driver', 'needs_reassignment', 'offered'].includes(t.status)).length, 'Ready for your attention', 'clock'], ['Drivers available', state.drivers.filter(d => d.status === 'online').length, `${state.drivers.length} drivers in your fleet`, 'users'], ['Completed trips', state.trips.filter(t => t.status === 'completed').length, 'Successfully delivered', 'check']];
   return `<div class="stats">${cards.map(([label, count, sub, i]) => `<article class="stat"><div>${label}<span class="stat-icon">${icon(i)}</span></div><strong>${count.toString().padStart(2, '0')}</strong><small>${sub}</small></article>`).join('')}</div>`;
@@ -304,7 +400,7 @@ function queueRun(source) {
   if (source?.startsWith('test:')) return source.slice(5);
   return undefined;
 }
-function queueFor(source = fleetSource, now = Date.now()) {
+function queueFor(source = fleetSource, now = fleetNow()) {
   return ProLiftBoard.dispatchQueue(state.trips, queueRun(source), now, dispatchLead());
 }
 function visibleDispatchQueue(lists) {
@@ -349,6 +445,10 @@ function testQueueOptions() {
     knownRuns.add(run);
     options.push([source || 'test:' + run, label, run]);
   }
+  if (state.lgtcReplay) {
+    knownRuns.add(state.lgtcReplay.runId);
+    options.push(['test:'+state.lgtcReplay.runId,'LGTC dispatch replay',state.lgtcReplay.runId]);
+  }
   const additional = new Set(state.trips.filter(t => t.demoRunId && active(t) && !t.poolParentId && !knownRuns.has(t.demoRunId)).map(t => t.demoRunId));
   for (const [i, run] of [...additional].entries()) {
     const walkthrough=state.trips.some(t=>t.demoRunId===run&&Array.isArray(t.demoCandidates));
@@ -363,6 +463,7 @@ function fleetIdentity(source) {
     scenario: { theme:'charlotte', code:'CLT', label:'Charlotte test', detail:'Dispatch simulation' },
     volume: { theme:'volume', code:'500', label:'500-trip test', detail:'Volume dataset' },
     'queue-review': { theme:'other', code:'150', label:'150-trip queue test', detail:'50 rides per queue at setup' },
+    'test:mongo-lgtc-replay': { theme:'other', code:'LGTC', label:'LGTC dispatch replay', detail:'Simulated dispatch' },
     replay: { theme:'sample', code:'RPL', label:'GPS replay', detail:'Location simulation' }
   };
   if (identities[source]) return identities[source];
@@ -408,32 +509,17 @@ function openQueueBookings() {
   window.scrollTo(0, 0);
 }
 function dispatchEmpty(total) {
+  if (!total && fleetSource === 'test:mongo-lgtc-replay') return '<h3>No open rides in this replay</h3><p>Start local dispatch to replay the schedule.</p>';
   if (fleetSource === 'replay') return '<h3>GPS replay</h3><p>Choose a queue above to view open rides.</p>';
   if (!total) return config.mode==='pilot' ? '<h3>No open rides</h3><p>Import and approve your LGTC schedule or add a booking.</p>' :
     '<h3>No open rides in this queue</h3><p>Choose another queue, open Bookings, or start a Charlotte test.</p><button class="btn small" id="watch-auto-dispatch">Start Charlotte test</button>';
   const title = { now:'No rides in the next hour', later:'No later pickups', attention:'No rides need attention' }[dispatchView];
   return '<h3>' + title + '</h3><p>Choose another queue tab above to see the open rides.</p>';
 }
-function dispatchBrief(lists, now) {
-  const next = [...lists.now, ...lists.later, ...lists.attention]
-    .filter(ride => ride.pickupAt >= now && !['arrived', 'onboard'].includes(ride.status))
-    .reduce((earliest, ride) => !earliest || ride.pickupAt < earliest.pickupAt ? ride : earliest, null);
-  const attention = lists.attention.length;
-  const nextTitle = next ? time(next.pickupAt) + ' · ' + next.pickup : 'No upcoming pickup';
-  const nextDetail = next ? date(next.pickupAt) + ' · ' + ProLiftBoard.dispatchLabel(state, next, now).label : 'Future bookings appear here.';
-  return '<section class="dispatch-brief" aria-label="Dispatch priorities">' +
-    '<article class="dispatch-brief-card' + (attention ? ' needs-review' : '') + '"><span class="dispatch-brief-icon" aria-hidden="true">' + icon('flag') + '</span><div><small>NEEDS ATTENTION</small><strong>' +
-    (attention ? attention + (attention === 1 ? ' ride to review' : ' rides to review') : 'Queue is clear') +
-    '</strong><p>' + (attention ? 'Missed pickups and flagged rides.' : 'No overdue or flagged rides in this queue.') +
-    '</p></div>' + (attention ? '<button class="btn small" id="review-attention-rides">Review rides</button>' : '') + '</article>' +
-    '<article class="dispatch-brief-card"><span class="dispatch-brief-icon" aria-hidden="true">' + icon('clock') + '</span><div><small>NEXT PICKUP</small><strong>' + esc(nextTitle) + '</strong><p>' +
-    esc(nextDetail) + '</p></div>' + (next ? '<button class="btn small" data-focus-ride="' + esc(next.id) +
-    '">Open pickup</button>' : '') + '</article></section>';
-}
 const dutyLabels = { online:'Online', busy:'On ride', offline:'Offline' };
 let dutyFilter = 'all';
 let fleetSearch='',vehicleFocusId=null,followedVehicleId=null,lastFollowPosition='';
-function dutyRoster(now = Date.now()) {
+function dutyRoster(now = fleetNow()) {
   const run = queueRun(fleetSource);
   return ProLiftBoard.fleet(state,now).filter(({driver}) =>
     run === undefined ? matchesFleetSource(driver) : (driver.demoRunId || null) === run);
@@ -460,16 +546,25 @@ function selectedVehiclePanel() {
   const {driver,trip,offer,hasLocation,age}=item;
   const canLocate=hasLocation&&matchesFleetSource(driver)&&fleetRowMatches(item);
   const activeRide=trip||state.trips.find(t=>t.id===offer?.tripId);
+  const nextRide=state.trips.filter(ride => ride.id !== activeRide?.id && !ride.poolParentId &&
+    active(ride) && ride.pickupAt >= fleetNow() &&
+    (ride.driverId === driver.id || ride.reservedDriverId === driver.id || ride.plannedDriverId === driver.id))
+    .sort((a,b) => a.pickupAt - b.pickupAt)[0];
   const freshness=hasLocation?' · '+(age<60000?Math.floor(age/1000)+' sec ago':Math.floor(age/60000)+' min ago'):'';
   const follow=followedVehicleId===driver.id&&vehicleCanFollow(item);
   return '<section class="fleet-inspector" aria-label="Selected vehicle"><div class="fleet-inspector-head"><div><small>SELECTED VEHICLE</small><h3>'+
-    esc(driver.vehicle)+' · '+esc(driver.plate)+'</h3></div><button class="text-btn" id="clear-vehicle-focus" aria-label="Clear selected vehicle">×</button></div>'+
+    esc([driver.vehicle,driver.plate].filter(Boolean).join(' · '))+'</h3></div></div>'+
     '<p><strong>'+esc(driver.name)+'</strong> · '+esc(dutyLabels[driver.status]||driver.status)+'</p><p>'+esc(dutyLocation(item)+freshness)+
     (hasLocation?' · '+time(driver.lastLocationAt):'')+'</p>'+
-    '<p>'+(activeRide?esc((trip?'Current ride ':'Offer pending ')+activeRide.reference):'No active ride')+'</p><div class="fleet-inspector-actions">'+
+    '<p>'+(activeRide?esc((trip?'Current ride ':'Offer pending ')+activeRide.reference+' · '+activeRide.customerName+
+      (trip ? ' · '+(labels[trip.status] || trip.status) : '')):'No active ride')+'</p>'+
+    '<p>'+(nextRide ? esc('Next pickup · '+time(nextRide.pickupAt)+' · '+nextRide.customerName+' · '+nextRide.reference+
+      (nextRide.driverId === driver.id ? ' · Assigned' : nextRide.reservedDriverId === driver.id ? ' · Reserved' : ' · Planned')) :
+      'No upcoming pickup for this driver')+'</p><div class="fleet-inspector-actions">'+
     (canLocate?'<button class="btn small" id="center-selected-vehicle">Center map</button>':'<small>Position unavailable in this map view.</small>')+
     (canLocate&&vehicleCanFollow(item)?'<button class="btn small" id="follow-selected-vehicle" aria-pressed="'+!!follow+'">'+(follow?'Stop following':'Follow vehicle')+'</button>':'')+
     (activeRide?'<button class="text-btn" data-focus-ride="'+esc(activeRide.id)+'">Open ride</button>':'')+
+    (nextRide?'<button class="text-btn" data-focus-ride="'+esc(nextRide.id)+'">Open next ride</button>':'')+
     '<button class="text-btn" data-driver-day="'+esc(driver.id)+'">Driver day</button></div></section>';
 }
 function centerFleetVehicle() {
@@ -483,13 +578,68 @@ function stopVehicleFollow() {
   const button=$('#follow-selected-vehicle');
   if(button){button.textContent='Follow vehicle';button.setAttribute('aria-pressed','false');}
 }
-function chooseFleetVehicle(id,fromRoster=false) {
+function chooseFleetVehicle(id) {
   stopVehicleFollow();
   focusedRideId=null;
   vehicleFocusId=selectedDriverId=id;
   render();
-  centerFleetVehicle();
-  if(fromRoster) $('.fleet-inspector')?.scrollIntoView({block:'nearest'});
+  if (!id) return;
+  const details=selectedVehiclePanel();
+  if (!details) return;
+  modal(details, {compact:true});
+  const dialog=$('#modal');
+  $('#center-selected-vehicle')?.addEventListener('click',centerFleetVehicle);
+  const follow=$('#follow-selected-vehicle');
+  if (follow) follow.onclick=()=>{
+    if (followedVehicleId) stopVehicleFollow();
+    else {
+      followedVehicleId=vehicleFocusId;
+      centerFleetVehicle();
+      follow.textContent='Stop following';
+      follow.setAttribute('aria-pressed','true');
+    }
+  };
+  dialog.querySelectorAll('[data-focus-ride]').forEach(button=>{
+    button.onclick=()=>tripDetail(button.dataset.focusRide);
+  });
+  bindDriverDayButtons(dialog);
+}
+function fleetProfilePhoto(driver) {
+  if (!driver?.profilePhotoVersion) return '';
+  const prefix = location.pathname === '/owner/' ? '/owner' : '';
+  return prefix+'/api/driver-profile-photo?driverId='+encodeURIComponent(driver.id)+
+    '&v='+encodeURIComponent(driver.profilePhotoVersion);
+}
+function editFleetProfilePhoto(driver) {
+  if (!driver) return;
+  modal('<h2>Profile photo · '+esc(driver.name)+'</h2><form id="fleet-profile-form">'+
+    '<label>Choose a profile photo<input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required></label>'+
+    '<p>Saved photos appear on every Owner screen.</p><button class="btn primary">Save photo</button></form>');
+  $('#fleet-profile-form').onsubmit = event => {
+    event.preventDefault();
+    const file = event.currentTarget.elements.photo.files[0];
+    run(async()=>{
+      if (!file || !['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 5000000) throw Error('Choose a JPEG, PNG or WebP photo under 5 MB.');
+      const photo = await createImageBitmap(file);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 160;
+        const size = Math.min(photo.width, photo.height);
+        canvas.getContext('2d').drawImage(photo,(photo.width-size)/2,(photo.height-size)/2,size,size,0,0,160,160);
+        await api('/api/driver-profile-photo',{driverId:driver.id,photo:canvas.toDataURL('image/jpeg',.85)});
+      } finally { photo.close(); }
+      $('#modal').close();
+      await refresh();
+    });
+  };
+}
+function fleetDriverAvatar(driver) {
+  const photo = fleetProfilePhoto(driver);
+  const initials = driver?.name?.trim().split(/\s+/).slice(0,2).map(word=>word[0]).join('');
+  const tone = [...(driver?.id || '')].reduce((sum,letter)=>sum+letter.charCodeAt(0),0)%4;
+  return '<span class="live-driver-avatar avatar-tone-'+tone+'" aria-hidden="true">'+
+    '<span class="live-driver-silhouette"></span><b>'+esc(initials||'—')+'</b>'+
+    (photo?'<img alt="" src="'+esc(photo)+'">':'')+'</span>';
 }
 function dispatchFleetStatus() {
   const roster = dutyRoster();
@@ -502,13 +652,13 @@ function dispatchFleetStatus() {
   const rows = roster.filter(fleetRowMatches)
     .sort((a,b)=>a.driver.name.localeCompare(b.driver.name)).map(item=>{
       const {driver,trip,status} = item;
-      return '<li><button class="text-btn" data-vehicle-focus="' + esc(driver.id) + '" aria-pressed="'+(vehicleFocusId===driver.id)+'">' +
-        esc(driver.vehicle) + ' · '+esc(driver.plate)+'<small>'+esc(driver.name)+'</small></button><span class="duty-pill duty-' + esc(driver.status) + '">' + esc(dutyLabels[driver.status] || driver.status) +
+      return '<li><button class="text-btn live-driver-identity" data-vehicle-focus="' + esc(driver.id) + '" aria-pressed="'+(vehicleFocusId===driver.id)+'">' +
+        fleetDriverAvatar(driver) + '<span><b>'+esc(driver.name)+'</b><small>'+esc([driver.vehicle,driver.plate].filter(Boolean).join(' · '))+'</small></span></button><span class="duty-pill duty-' + esc(driver.status) + '">' + esc(dutyLabels[driver.status] || driver.status) +
         '</span><small>' + esc(trip ? trip.reference + ' · ' + dutyLocation(item) : status==='offered' ?
-          'Offer pending · ' + dutyLocation(item) : dutyLocation(item)) + '</small></li>';
+          'Offer pending · ' + dutyLocation(item) : dutyLocation(item)) + '</small><button class="text-btn live-photo-edit" data-fleet-photo="'+esc(driver.id)+'" aria-label="Change profile photo for '+esc(driver.name)+'">Photo</button></li>';
     }).join('');
   return '<section id="driver-duty" class="driver-duty" aria-label="Driver duty status"><div class="driver-duty-heading"><div><h3>Vehicles and driver duty</h3>' +
-    '<p>Search the fleet or select a vehicle to see its location and ride.</p></div>' +
+    '</div>' +
     (roster.length ? '<button class="text-btn" id="dispatch-fleet-status">Fleet details</button>' :
       '<button class="text-btn" data-go="drivers">Drivers &amp; cars</button>') + '</div>' +
     '<form id="fleet-vehicle-search" class="fleet-vehicle-search"><input type="search" name="query" maxlength="100" aria-label="Find a vehicle" placeholder="Plate, vehicle or driver" value="'+esc(fleetSearch)+'"><button class="btn small">Find</button>'+
@@ -655,17 +805,18 @@ function dispatchRideRow(t, now) {
   const status = {accepted:'Confirmed',heading_to_pickup:'To pickup',arrived:'At pickup',onboard:'On ride'}[t.status] || 'Assigned';
   const opens = t.pickupAt - dispatchLead()*60000;
   const issue = ProLiftBoard.attentionReason(t,now,dispatchLead());
-  const pending=state.offers.some(o=>o.tripId===t.id&&o.status==='pending'&&o.expiresAt>now);
-  const assignment = driver ? status + ': ' + driver.name : pending ? ProLiftBoard.dispatchLabel(state,t,now).label : issue || (opens>now ?
+  const pendingOffer=state.offers.find(o=>o.tripId===t.id&&o.status==='pending'&&o.expiresAt>now);
+  const pending=!!pendingOffer;
+  const assignment = driver ? status + ': ' + driver.name : pending ? (t.demoRunId==='mongo-lgtc-replay' ? 'Offer pending: '+(state.drivers.find(d=>d.id===pendingOffer.driverId)?.name||'Driver') : ProLiftBoard.dispatchLabel(state,t,now).label) : issue || (opens>now ?
     'Scheduled · offers open ' + date(opens) + ' ' + time(opens) : ProLiftBoard.dispatchLabel(state,t,now).label);
   const lastFailure=state.offers.findLast(o=>o.tripId===t.id&&['declined','expired'].includes(o.status));
   const attempt=lastFailure?(state.drivers.find(d=>d.id===lastFailure.driverId)?.name||'Previous driver')+
     (lastFailure.status==='declined'?' declined':' did not respond in 45 seconds'):'';
-  const canAssign = !t.driverId && opens<=now && ['awaiting_driver','needs_reassignment','offered'].includes(t.status);
+  const canAssign = t.demoRunId!=='mongo-lgtc-replay' && !t.driverId && opens<=now && ['awaiting_driver','needs_reassignment','offered'].includes(t.status);
   return '<article class="dispatch-ride-wrap"><button class="dispatch-row ' + (t.id === focusedRideId ? 'selected' : '') +
-    '" data-focus-ride="' + esc(t.id) + '"><div><span class="dispatch-dot ' + kind + '"></span><strong>' + esc(t.reference) +
-    '</strong><span>' + esc(date(t.pickupAt) + ' · ' + time(t.pickupAt)) + '</span></div><p>' + esc(t.pickup) +
-    '</p><small>→ ' + esc(t.destination) + '</small>' + (driver&&issue?'<small class="dispatch-last-attempt">'+esc(issue)+'</small>':'')+
+    '" data-detail="' + esc(t.id) + '"><div><span class="dispatch-dot ' + kind + '"></span><strong>' + esc(t.reference) +
+    '</strong><span>' + esc(date(t.pickupAt) + ' · ' + time(t.pickupAt)) + '</span></div><p class="live-pickup">' + icon('map') + ' ' + esc(t.pickup) +
+    '</p><small class="live-dropoff">' + icon('flag') + ' ' + esc(t.destination) + '</small>' + (driver&&issue?'<small class="dispatch-last-attempt">'+esc(issue)+'</small>':'')+
     (attempt?'<small class="dispatch-last-attempt">'+esc(attempt)+'</small>':'') + '<footer><span class="' + (issue&&!pending?'queue-issue':'') + '">' + esc(assignment) + '</span> <span>' + t.passengers +
     (t.passengers === 1 ? ' rider' : ' riders') + (t.isSharedRun ? ' · Shared' : '') + '</span></footer></button>' +
     (canAssign ? '<button class="dispatch-assign" data-quick-assign="' + esc(t.id) + '">' + (issue?'Review &amp; assign':'Assign') + '</button>' : '') + '</article>';
@@ -678,7 +829,7 @@ function latestCompletion() {
     (!latest || t.completedAt > latest.completedAt) ? t : latest, null);
   if (!ride) return '';
   const driver = state.drivers.find(d=>d.id===ride.driverId);
-  return '<section class="dispatch-completion"><div>' + icon('check') + '<strong>Last completed</strong></div><p>' +
+  return '<section class="dispatch-completion dispatch-completion-clickable"><div>' + icon('check') + '<strong>Last completed</strong></div><p>' +
     esc([ride.reference,driver?.name,date(ride.completedAt),time(ride.completedAt)].filter(Boolean).join(' · ')) +
     '</p><button class="text-btn" data-detail="' + esc(ride.id) + '">View completed ride</button></section>';
 }
@@ -707,8 +858,97 @@ function selectedDispatchRide(t,now) {
         esc(o.status==='pending'&&o.expiresAt<=now?'Awaiting timeout check':statuses[o.status]||o.status)+
         (o.declineReason?' · '+esc(o.declineReason):'')+'</li>').join('')+'</ol></details>':'')+'</section>';
 }
+let missedPickupProgress='', missedPickupTimer;
+function bindMissedPickupDemo(){
+  const button=$('#start-missed-pickup');
+  if(!button)return;
+  $('#missed-group-test').onclick=()=>run(async()=>{
+    clearInterval(missedPickupTimer);
+    const result=await fetch('/owner/missed-group-test',{method:'POST'});
+    if(!result.ok)throw Error(await result.text());
+    missedPickupProgress=await result.text();
+    $('#missed-pickup-progress').textContent=missedPickupProgress;
+  });
+  const url='/owner/missed-pickup-demo';
+  const retry=$('#retry-missed-demo'),accept=$('#accept-missed-demo'),decline=$('#decline-missed-demo');
+  const show=status=>{
+    missedPickupProgress='Minute '+status.minute+' / 15 · '+status.attempts+' driver searches · '+
+      (status.attention?'Needs Attention · '+status.reason:status.status==='accepted'?'Confirmed assignment · '+status.driver:status.status==='offered'?'Offer pending · '+status.driver:'Searching for an eligible driver');
+    if(status.history?.length)missedPickupProgress+=' · Offers: '+status.history.join(', ');
+    $('#missed-pickup-progress').textContent=missedPickupProgress;
+    $('#retry-missed-demo').hidden=!(status.attention&&status.history?.length===3);
+    $('#accept-missed-demo').hidden=$('#decline-missed-demo').hidden=!(status.status==='offered'&&status.driver==='Jordan Reed');
+  };
+  for(const [control,path] of [[retry,'retry'],[accept,'accept'],[decline,'decline']])control.onclick=()=>run(async()=>{
+    const response=await fetch('/owner/missed-'+path,{method:'POST'});
+    if(!response.ok)throw Error(await response.text());
+    show(await response.json());
+  });
+  button.onclick=()=>run(async()=>{
+    clearInterval(missedPickupTimer);
+    const scenario=$('#decline-all-recovery-offers').checked?'?decline=3':$('#decline-second-recovery-offer').checked?'?decline=2':$('#decline-recovery-offer').checked?'?decline=1':$('#recover-with-driver').checked?'?accept=1':'';
+    const update=async method=>{
+      const response=await fetch(url+scenario,{method});
+      if(!response.ok)throw Error('Missed pickup test unavailable.');
+      const status=await response.json();
+      show(status);
+      if(status.attention||status.status==='accepted')clearInterval(missedPickupTimer);
+    };
+    await update('POST');
+    missedPickupTimer=setInterval(()=>run(()=>update('GET')),500);
+  });
+}
+function liveFleetProgress(){
+  if(location.pathname!=='/owner/'||location.port!=='4781')return '';
+  const rides=state.trips.filter(ride=>ride.reference.startsWith('TEST284-'));
+  if(!rides.length)return '<button class="btn" type="button" id="start-live-284">Start 284-ride dispatch</button>';
+  const count=status=>rides.filter(ride=>ride.status===status).length;
+  const completed=count('completed'), attention=count('needs_reassignment');
+  const resolved=completed+attention, running=resolved<rides.length;
+  return '<section class="live-fleet-progress" aria-label="284-ride test progress">'+
+    '<div class="fleet-progress-top"><span class="fleet-run-state '+(running?'is-running':'')+'">'+
+    (running?'Dispatch running':'Run finished')+'</span><strong>'+resolved+' / '+rides.length+' processed</strong></div>'+
+    '<progress aria-label="Rides processed" value="'+resolved+'" max="'+rides.length+'"></progress>'+
+    '<div class="fleet-progress-counts"><span><b>'+completed+'</b> completed</span><span><b>'+count('offered')+
+    '</b> offers pending</span><span><b>'+attention+'</b> need attention</span><span><b>'+
+    rides.filter(ride=>!ride.driverId).length+'</b> unassigned</span></div></section>';
+}
+const fleetMetricHistory = new Map();
+function fleetMetricTrend(kind, count) {
+  const key = fleetSource + ':' + (queueRun(fleetSource) || '') + ':' + kind;
+  const samples = fleetMetricHistory.get(key) || [];
+  if (samples.at(-1)?.value !== count) {
+    samples.push({value:count});
+    if (samples.length > 16) samples.shift();
+    fleetMetricHistory.set(key,samples);
+  }
+  const peak = Math.max(1,...samples.map(sample=>sample.value));
+  const points = samples.map((sample,index)=>
+    (100*index/Math.max(1,samples.length-1)).toFixed(1)+','+(23-20*sample.value/peak).toFixed(1));
+  if (points.length===1) {
+    const [,y] = points[0].split(',');
+    return '<svg class="live-metric-trend" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true"><circle cx="97" cy="'+y+'" r="2"/></svg>';
+  }
+  return '<svg class="live-metric-trend" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">'+
+    '<polygon points="0,26 '+points.join(' ')+' 100,26"/><polyline points="'+points.join(' ')+'"/></svg>';
+}
+let mongoDispatchStarting = false;
+function mongoDispatchControls() {
+  if (!mongoLiveReplay) return '';
+  const replay = state.lgtcReplay;
+  const rides = replay ? state.trips.filter(ride=>ride.demoRunId===replay.runId) : [];
+  const progress = replay ? rides.filter(ride=>ride.status==='completed').length+' / '+rides.length+
+    ' completed · '+rides.filter(ride=>ride.status==='offered').length+' offers pending · '+replay.held+' in Owner review' : '';
+  return '<button type="button" class="btn primary" id="start-mongo-dispatch" '+(replay?.running||mongoDispatchStarting?'disabled':'')+'>'+
+    (replay?.running?'Dispatch running':'Start local dispatch')+'</button>'+
+    (replay ? '<p role="status">'+esc(replay.error||progress)+'</p>' : '');
+}
+function fleetNow() {
+  return fleetSource === 'test:'+state?.lgtcReplay?.runId ? state.lgtcReplay.at : lastSnapshotAt || Date.now();
+}
 function overview() {
-  const now = Date.now();
+  if(location.hash==='#acceptance-test'){dispatchSearch='DUAL-ACCEPT-TEST';dispatchView='now';}
+  const now = fleetNow();
   const fleet = ProLiftBoard.fleet(state, now).filter(i => matchesFleetSource(i.driver));
   const lists = queueFor(fleetSource, now), total = queueTotal(lists), visible=visibleDispatchQueue(lists), rows=visible[dispatchView];
   const pages = Math.max(1, Math.ceil(rows.length / queuePageSize));
@@ -724,27 +964,44 @@ function overview() {
   const paging = pages > 1 ? '<div class="dispatch-paging"><button class="btn small" data-dispatch-page="' + (dispatchPage - 1) +
     '" ' + (dispatchPage === 1 ? 'disabled' : '') + '>Previous</button><small>' + dispatchPage + ' / ' + pages +
     '</small><button class="btn small" data-dispatch-page="' + (dispatchPage + 1) + '" ' + (dispatchPage === pages ? 'disabled' : '') + '>Next</button></div>' : '';
-  const planningOpen=$('#dispatch-planning')?.open;
-  return '<div class="dispatch-command fleet-theme-' + identity.theme + '"><section class="dispatch-toolbar"><div class="dispatch-title"><span class="eyebrow">OWNER WORKSPACE</span><div><h1>Dispatch</h1>' + dispatchIndicator() +
-    '</div></div><button class="btn primary" id="add-planned-ride">'+icon('plus')+' New booking</button></section>' +
-    '<div class="dispatch-rail"><nav class="dispatch-jump" aria-label="On this page"><a href="#ride-queue">'+icon('car')+'Ride queue</a><a href="#fleet-map">'+icon('map')+'Fleet map</a><a href="#driver-duty">'+icon('users')+'Driver duty</a><a href="#dispatch-planning" id="open-dispatch-planning">'+icon('clock')+'Plan &amp; records</a></nav>'+
-    dispatchFleetPicker() + '</div></div>' +
-    (!['device','sample'].includes(fleetSource)?'<aside class="queue-test-notice"><p><strong>Test data</strong> · '+esc(identity.label)+' is selected.'+
+  const activeTrips = [...lists.now, ...lists.later, ...lists.attention]
+    .filter(t => ['accepted','heading_to_pickup','arrived','onboard'].includes(t.status));
+  const metrics = [
+    ['available','Available drivers',fleet.filter(i => i.status === 'available').length,'car'],
+    ['riding','On trip',activeTrips.length,'map'],
+    ['waiting','Waiting requests',[...lists.now,...lists.later].filter(t => ['awaiting_driver','offered','needs_reassignment'].includes(t.status)).length,'clock'],
+    ['attention','Needs attention',lists.attention.length,'flag']
+  ];
+  const summary = '<section class="live-metrics" aria-label="Fleet totals">'+metrics.map(([kind,label,count,symbol]) =>
+    '<button type="button" class="live-metric '+kind+'" data-live-total="'+kind+'"><span class="live-metric-icon" aria-hidden="true">'+icon(symbol)+'</span><div><strong>'+count+'</strong><span>'+label+'</span>'+fleetMetricTrend(kind,count)+'</div></button>').join('')+'</section>';
+  const activeBoard = '<section class="live-active-board"><h2>Active trips</h2>'+
+    (activeTrips.length ? '<div class="live-active-scroll"><table><thead><tr><th>Trip</th><th>Driver</th><th>Pickup</th><th>Drop-off</th><th>Status</th></tr></thead><tbody>'+
+      activeTrips.map(t=>'<tr><td><button class="btn small active-trip-link" data-detail="'+esc(t.id)+'">'+esc(t.reference)+'</button></td><td>'+
+        fleetDriverAvatar(state.drivers.find(d=>d.id===t.driverId)) + esc(state.drivers.find(d=>d.id===t.driverId)?.name||'—')+'</td><td>'+esc(t.pickup)+'</td><td>'+esc(t.destination)+'</td><td>'+badge(t.status)+'</td></tr>').join('')+
+      '</tbody></table></div>' : '<p>No trips in progress.</p>')+'</section>';
+  return '<div class="live-dashboard"><div class="dispatch-command fleet-theme-' + identity.theme + '"><section class="dispatch-toolbar"><div class="dispatch-title"><div><h1>Live fleet</h1>' + dispatchIndicator() + liveFleetProgress() + mongoDispatchControls() +
+    (location.pathname==='/owner/'&&location.port==='4781'?'<details class="missed-pickup-demo" '+($('#missed-pickup-test')?.open?'open':'')+' id="missed-pickup-test"><summary>Missed pickup test</summary><label><input type="checkbox" id="recover-with-driver"> Bring a test driver online at minute 8</label> <label><input type="checkbox" id="decline-recovery-offer"> Maya declines the first offer</label> <label><input type="checkbox" id="decline-second-recovery-offer"> Maya and James decline</label> <label><input type="checkbox" id="decline-all-recovery-offers"> All three drivers decline</label> <button class="btn small" id="start-missed-pickup">Start recovery test</button><button class="btn small" id="retry-missed-demo" hidden>Retry driver search</button> <button class="btn small" id="accept-missed-demo" hidden>Accept as Jordan</button> <button class="btn small" id="decline-missed-demo" hidden>Decline as Jordan</button><button class="btn small" id="missed-group-test">Test five eligible drivers</button><p id="missed-pickup-progress" role="status">'+esc(missedPickupProgress)+'</p></details>':'') +
+    '</div></div><button class="btn primary" id="add-planned-ride">'+icon('plus')+' New booking</button></section>' + summary +
+    (mongoLiveReplay ? '' : '<div class="dispatch-rail">' + dispatchFleetPicker() + '</div>') + '</div>' +
+    (!['device','sample','test:mongo-lgtc-replay'].includes(fleetSource)?'<aside class="queue-test-notice"><p><strong>Test data</strong> · '+esc(identity.label)+' is selected.'+
       (fleetSource==='queue-review'?' Starts with 50 Now, 50 Later and 50 Attention.':'')+'</p>'+
       (fleetSource==='queue-review'?'<button class="btn small" data-queue-review="restart">Start fresh test</button>':'')+
       '<button class="btn small" data-dispatch-fleet="device">Back to Ordinary fleet</button></aside>':'')+
-    dispatchBrief(lists, now) + '<div class="dispatch-workspace"><section id="fleet-map" class="dispatch-map fleet-map-panel">' +
+    (mongoLiveReplay ? '' : '<details class="live-filter-disclosure" '+ (document.querySelector('.live-filter-disclosure')?.open || dispatchSearch || dutyFilter !== 'all' || vehicleFocusId ? 'open' : '') +'><summary>Search &amp; filters</summary><div class="avl-filter-bar"><form id="dispatch-search" class="dispatch-search"><label for="avl-ride-query">Find a ride</label><input id="avl-ride-query" name="query" type="search" maxlength="120" placeholder="Ride, rider, driver or stop" value="'+esc(dispatchSearch)+'"><button class="btn small">Find</button>'+
+    '</form><div class="avl-fleet-controls"><label>Status<select id="avl-status">' +
+    [['all','All vehicles'],['online','Available'],['busy','On a ride'],['offline','Offline'],['gps','Location needs attention']].map(([key,label]) =>
+      '<option value="'+key+'" '+(dutyFilter===key?'selected':'')+'>'+label+'</option>').join('') +
+    '</select></label><label>Vehicle<select id="avl-vehicle"><option value="">Choose a vehicle</option>' +
+    fleet.map(({driver}) => '<option value="'+esc(driver.id)+'" '+(vehicleFocusId===driver.id?'selected':'')+'>'+
+      esc(driver.name+' · '+driver.vehicle+' · '+driver.plate)+'</option>').join('') +
+    '</select></label><button type="button" class="btn small" id="avl-reset">Reset filters</button></div></div></details>') +
+    '<div class="dispatch-workspace avl-workspace"><section id="fleet-map" class="dispatch-map fleet-map-panel">' +
     '<div class="dispatch-map-title"><div><h2>Fleet map</h2><small>' + esc(identity.detail) + '</small></div>' + fleetBadge(identity) + '</div>' +
-    selectedVehiclePanel() + liveFleetMap(fleet,null) + dispatchFleetStatus() + '</section>' +
-    '<aside id="ride-queue" class="dispatch-queue fleet-theme-' + identity.theme + '"><header><div><h2 tabindex="-1">Ride queue</h2>' + fleetBadge(identity) +
+    liveFleetMap(fleet.filter(fleetRowMatches),null) + activeBoard + '</section>' +
+    '<div class="live-dispatch-side"><aside id="ride-queue" class="dispatch-queue fleet-theme-' + identity.theme + '"><header><div><h2 tabindex="-1">' + icon('flag') + ' Ride queue</h2>' + fleetBadge(identity) +
     '</div><div class="queue-header-actions"><strong>' + (dispatchSearch?queueTotal(visible)+' of ':'') + total + ' open</strong></div></header>'+
-    '<form id="dispatch-search" class="dispatch-search"><input name="query" type="search" maxlength="120" aria-label="Find open rides" placeholder="Ride, rider, driver or stop" value="'+esc(dispatchSearch)+'"><button class="btn small">Find</button>'+
-    (dispatchSearch?'<button class="text-btn" type="button" id="clear-dispatch-search">Clear</button>':'')+'</form><div class="dispatch-tabs">' + tabs +
-    '</div>' + (selected?selectedDispatchRide(selected,now):'') + '<div class="dispatch-queue-rows">' + list + '</div>' + paging + latestCompletion() + '</aside></div>'+
-    '<details class="dispatch-records" id="dispatch-planning" '+(planningOpen?'open':'')+'><summary>Plan &amp; records</summary><div class="dispatch-record-actions">'+
-    '<button class="btn" data-go="imports">Import LGTC or Excel</button><button class="btn" id="design-vehicle-plan">Plan bookings</button><button class="btn" data-driver-day="">Driver day</button>'+
-    '<button class="btn" id="queue-bookings">All bookings</button><button class="btn" data-go="schedule">Upcoming schedule</button>'+
-    (config.mode==='pilot'?'':'<button class="btn" data-queue-review="open">Open test queues</button>')+lgtcHandoff()+'</div></details>';
+    '<div class="dispatch-tabs">' + tabs +
+    '</div>' + (selected?selectedDispatchRide(selected,now):'') + '<div class="dispatch-queue-rows">' + list + '</div>' + paging + latestCompletion() + '</aside>' + dispatchFleetStatus() + '</div></div></div>';
 }
 function sourceForTrip(trip) {
   if (!trip.demoRunId) {
@@ -805,42 +1062,433 @@ function fleetDetails(item,labels) {
   const age=Math.floor(item.age/1000),seen=age<60 ? age+' seconds ago' : Math.floor(age/60)+' minutes ago';
   return '<div class="fleet-person"><span class="avatar large">'+esc(d.name.split(' ').map(x=>x[0]).join(''))+'</span><h2>'+esc(d.name)+'</h2><span class="fleet-state '+item.status+'"><i class="fleet-dot '+item.status+'"></i>'+labels[item.status]+'</span><p>'+esc(d.vehicle)+' · '+esc(d.plate)+'</p></div><div class="location-details"><small>LAST LOCATION</small><strong>'+esc(d.lat?.toFixed(5))+', '+esc(d.lng?.toFixed(5))+'</strong><span>'+seen+(item.status==='offline'?' · last known location':d.locationSource==='device'?' · phone GPS'+(d.trackingEnabled===false?' · sharing stopped':''):d.locationSource==='replay'?' · dummy coordinate replay':' · simulated GPS')+'</span></div><div class="selected-ride"><small>'+(t?'CURRENT RIDE':offered?'OFFER SENT':'CURRENT WORK')+'</small>'+(t?'<h3>'+esc(t.reference)+'</h3>'+tripFacts(t,d)+'<p><strong>'+esc(t.pickup)+'</strong><br>↓<br>'+esc(t.destination)+'</p>'+badge(t.status)+'<p>Pickup '+time(t.pickupAt)+' · '+esc(t.customerName)+'</p><button class="btn full" data-detail="'+t.id+'">View ride</button>':offered?'<h3>'+esc(offered.pickup)+'</h3><p>Waiting for this driver to accept.<br>Pickup '+time(offered.pickupAt)+'</p><button class="btn full" data-detail="'+offered.id+'">View offer</button>':'<h3>'+(item.status==='available'?'Ready for the next pickup':item.status==='offline'?'Off duty':'Location update needed')+'</h3><p>'+(item.status==='available'?'The system will offer a suitable nearby trip when its pickup time approaches.':'This driver is not eligible for new automatic offers right now.')+'</p>')+'</div>';
 }
-function liveFleetMap(items,selected){return '<div class="geo-map-wrap">'+mapPriorityLegend()+'<div id="geo-fleet-map" role="region" aria-label="Geographic fleet map"></div><div class="geo-map-actions"><button class="btn small" id="fit-geo-fleet">Show vehicles</button><button class="btn small" id="fit-priority-map">Show priority rides</button><span>'+ (fleetSource==='scenario'?'4 TEST CARS':fleetSource==='device'?'PHONE GPS':fleetSource==='replay'?'DUMMY COORDINATES':'SAMPLE POSITIONS')+'</span></div>'+(!items.some(i=>i.hasLocation)?(fleetSource==='device'?'<div class="geo-empty"><strong>No phone locations yet</strong><span>Drivers can share their location from My work.</span></div>':'<div class="geo-empty"><strong>No vehicle positions for this fleet</strong></div>'):'')+'<div id="geo-map-status" role="status"></div></div>';}
+let fleetMapTheme = 'night';
+try { if (localStorage.getItem('royalcab.map-theme') === 'day') fleetMapTheme = 'day'; } catch {}
+function liveFleetMap(items,selected){return '<div class="geo-map-wrap">'+mapPriorityLegend()+'<div id="geo-fleet-map" role="region" aria-label="Geographic fleet map" data-map-theme="'+fleetMapTheme+'"></div><ul class="live-vehicle-legend" aria-label="Vehicle marker colors"><li>Available</li><li>On trip</li><li>Near drop-off</li><li>Offer pending</li><li>Offline / GPS stale</li></ul><div class="geo-map-actions"><div class="fleet-map-theme" role="group" aria-label="Map appearance"><button type="button" data-map-theme-choice="day">Day</button><button type="button" data-map-theme-choice="night">Night</button></div><button class="btn small" id="fit-geo-fleet">Show vehicles</button><button class="btn small" id="fit-priority-map">Show priority rides</button><span>'+ (fleetSource==='scenario'?'4 TEST CARS':fleetSource==='device'?'PHONE GPS':fleetSource==='replay'?'DUMMY COORDINATES':'SAMPLE POSITIONS')+'</span></div>'+(!items.some(i=>i.hasLocation)?(fleetSource==='device'?'<div class="geo-empty"><strong>No phone locations yet</strong><span>Drivers can share their location from My work.</span></div>':'<div class="geo-empty"><strong>No vehicle positions for this fleet</strong></div>'):'')+'<div id="geo-map-status" role="status"></div></div>';}
 function bookingScopeOptions() {
   const scopes = [['all', 'All records'], ['live', 'Ordinary bookings']];
   for (const [source, label, run] of testQueueOptions()) scopes.push([run, source === 'volume' ? '500-trip test dataset' : label]);
   if (!scopes.some(([key]) => key === tripDataScope)) scopes.push([tripDataScope, 'Previous test']);
   return scopes.map(([key, label]) => '<option value="' + esc(key) + '" ' + (tripDataScope === key ? 'selected' : '') + '>' + label + '</option>').join('');
 }
+const tripFilters = { date:'', driver:'', service:'', source:'', willCall:'', rider:'', reference:'' };
+const tripDateEastern = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
+function selectTripWorkspace(page = boardPage, pageSize = 25){
+ const filteredTrips = state.trips.filter(ride =>
+   (!tripFilters.willCall || Boolean(ride.willCall) === (tripFilters.willCall === 'yes')) &&
+   (!tripFilters.reference || ride.reference.toLowerCase().includes(tripFilters.reference.trim().toLowerCase())) &&
+   (!tripFilters.rider || ride.customerName.toLowerCase().includes(tripFilters.rider.trim().toLowerCase())) &&
+   (!tripFilters.date || Number.isFinite(ride.pickupAt) && tripDateEastern.format(ride.pickupAt) === tripFilters.date) &&
+   (!tripFilters.driver || [ride.driverId,ride.reservedDriverId,ride.plannedDriverId].includes(tripFilters.driver) ||
+     state.offers.some(offer => offer.tripId === ride.id && offer.driverId === tripFilters.driver && offer.status === 'pending' && offer.expiresAt > Date.now())) &&
+   (!tripFilters.service || (ride.requirements?.includes('wheelchair') ? 'accessible' : 'standard') === tripFilters.service) &&
+   (!tripFilters.source || (ride.lgtc ? 'lgtc' : ride.demoRunId || ride.testData ? 'sample' : 'booking') === tripFilters.source));
+ return ProLiftBoard.select(filteredTrips,{scope:tripDataScope,filter,search,page,pageSize,drivers:state.drivers,order:filter==='upcoming'&&bookingOrder==='past'?'next':bookingOrder,now:lastSnapshotAt||Date.now(),leadMinutes:dispatchLead()});
+}
+function filteredTripsCsv() {
+  const {rows} = selectTripWorkspace(1, Math.max(1,state.trips.length));
+  if (!rows.length) return;
+  const cell = value => {
+    const raw = String(value ?? '');
+    const safe = /^[\s]*[=+@-]|^[\t\r\n]/.test(raw) ? "'" + raw : raw;
+    return '"' + safe.replace(/"/g,'""') + '"';
+  };
+  const records = [['Trip ID','Rider','Status','Driver','Pickup (ISO UTC)','Planned drop-off (ISO UTC)','Pickup','Destination','Service','Source','Will-call']];
+  const iso = timestamp => Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : '';
+  for (const ride of rows) {
+    const driver = state.drivers.find(candidate => candidate.id === (ride.driverId || ride.reservedDriverId || ride.plannedDriverId));
+    records.push([ride.reference,ride.customerName,labels[ride.status] || ride.status,driver?.name || ride.confirmedDriver?.name,
+      iso(ride.pickupAt),iso(ride.plannedEndAt),ride.pickup,ride.destination,
+      ride.requirements?.includes('wheelchair') ? 'Wheelchair accessible' : 'Standard',
+      ride.lgtc ? 'LGTC' : ride.demoRunId || ride.testData ? 'Test data' : 'Other booking',
+      ride.willCall ? 'Yes' : 'No']);
+  }
+  return records.map(row => row.map(cell).join(',')).join('\r\n');
+}
+const tripColumns = ['Pickup / end','Trip / customer','Journey','Service / source','Driver','Status'];
+const tripViewStorage = 'royalcab-owner-trips-v1';
+function readTripPreferences() {
+  try { return JSON.parse(localStorage.getItem(tripViewStorage)) || {}; }
+  catch { return {}; }
+}
+function tripWorkspaceControls() {
+  const views = readTripPreferences().views || [];
+  return '<div class="bookings-filters"><label>Saved views<select id="saved-trip-view"><option value="">Choose a saved view</option>'+views.map((view,index)=>'<option value="'+index+'">'+esc(view.name)+'</option>').join('')+'</select></label><button class="btn small" id="save-trip-view">Save current filters</button><button class="btn small" id="trip-columns">Columns</button></div>';
+}
+function bindTripPreferences() {
+  const picker = $('#saved-trip-view');
+  if (!picker) return;
+  picker.onchange = () => {
+    if (!picker.value) return;
+    const view = readTripPreferences().views?.[Number(picker.value)];
+    if (!view) return;
+    for (const key of Object.keys(tripFilters)) tripFilters[key] = view.fields[key] || '';
+    ({search,filter,bookingOrder,tripDataScope} = view);
+    boardPage = 1;
+    render();
+    $('#saved-trip-view').value = picker.value;
+  };
+  $('#save-trip-view').onclick = () => {
+    modal('<h2>Save current filters</h2><form id="save-trip-view-form"><label>View name<input name="name" required maxlength="60"></label><button class="btn primary">Save view</button></form>');
+    $('#save-trip-view-form').onsubmit = event => {
+      event.preventDefault();
+      const name = new FormData(event.currentTarget).get('name').trim();
+      if (!name) return;
+      const preferences = readTripPreferences();
+      const views = (preferences.views || []).filter(view=>view.name.toLowerCase()!==name.toLowerCase());
+      views.push({name,fields:{...tripFilters},search,filter,bookingOrder,tripDataScope});
+      localStorage.setItem(tripViewStorage,JSON.stringify({...preferences,views}));
+      $('#modal').close();
+      render();
+      $('#saved-trip-view').value = String(views.length-1);
+      toast('Trip view saved.');
+    };
+  };
+  $('#trip-columns').onclick = () => {
+    const preferences = readTripPreferences();
+    modal('<h2>Trip columns</h2><form id="trip-column-form">'+tripColumns.map((label,index)=>'<label><input type="checkbox" name="column" value="'+index+'" '+((preferences.hidden || []).includes(index)?'':'checked')+'>'+esc(label)+'</label>').join('')+'<button class="btn primary">Apply columns</button></form>');
+    $('#trip-column-form').onsubmit = event => {
+      event.preventDefault();
+      const visible = new Set(new FormData(event.currentTarget).getAll('column').map(Number));
+      const hidden = tripColumns.map((_,index)=>index).filter(index=>!visible.has(index));
+      localStorage.setItem(tripViewStorage,JSON.stringify({...preferences,hidden}));
+      $('#modal').close();
+      render();
+    };
+  };
+  const table = $('#trip-results table');
+  for (const index of readTripPreferences().hidden || []) {
+    if (!Number.isInteger(index) || index < 0 || index >= tripColumns.length) continue;
+    for (const row of table?.rows || []) row.cells[index+1].hidden = true;
+  }
+}
 function tripsPage(){
- const view=ProLiftBoard.select(state.trips,{scope:tripDataScope,filter,search,page:boardPage,drivers:state.drivers,order:bookingOrder,leadMinutes:dispatchLead()});boardPage=view.page;
- return '<section class="simple-page-head"><div><h1>Bookings</h1><p>'+view.counts.all+' records · '+view.counts.attention+' need attention</p></div><div><button class="btn" data-go="schedule">Upcoming</button><button class="btn" data-go="imports">Import file</button><button class="btn primary" id="add-planned-ride">New booking</button></div></section>'+lgtcHandoff()+'<section class="bookings-panel"><div class="bookings-filters"><label class="search">'+icon('search')+'<input id="trip-search" type="search" placeholder="Customer, mobile or booking" aria-label="Search trips" value="'+esc(search)+'"></label><select id="booking-order" aria-label="Pickup order">' + [['next','Next pickup first'],['latest','Latest pickup first'],['past','Past trips only']].map(([key,label]) => '<option value="'+key+'" '+(bookingOrder===key?'selected':'')+'>'+label+'</option>').join('') + '</select><select id="booking-status" aria-label="Booking status">'+[['all','All statuses'],['waiting','Waiting'],['offered','Offer sent'],['assigned','Assigned'],['attention','Needs attention'],['completed','Completed'],['cancelled','Cancelled']].map(([key,label])=>'<option value="'+key+'" '+(filter===key?'selected':'')+'>'+label+'</option>').join('')+'</select><select id="trip-data-scope" aria-label="Booking records">'+bookingScopeOptions()+'</select></div><div id="trip-results">'+simpleTripTable(view.rows)+'</div><div class="pagination"><span>'+view.start+'–'+view.end+' of '+view.total+'</span><button class="btn small" data-board-page="'+(view.page-1)+'" '+(view.page<=1?'disabled':'')+'>Previous</button><small>'+view.page+' / '+view.pages+'</small><button class="btn small" data-board-page="'+(view.page+1)+'" '+(view.page>=view.pages?'disabled':'')+'>Next</button></div></section>';
+ const view=selectTripWorkspace();boardPage=view.page;
+ const options = (key,entries) => entries.map(([value,label]) =>
+   '<option value="'+esc(value)+'"'+(tripFilters[key]===value?' selected':'')+'>'+esc(label)+'</option>').join('');
+ const fields = '<div class="bookings-filters trips-field-grid"><label>Trip ID<input type="search" data-trip-field="reference" value="'+esc(tripFilters.reference)+'"></label><label>Rider name<input type="search" data-trip-field="rider" value="'+esc(tripFilters.rider)+'"></label><label>Will-call<select data-trip-field="willCall">'+options('willCall',[['','All rides'],['yes','Will-call only'],['no','Confirmed time']])+'</select></label><label>Trip date (ET)<input type="date" data-trip-field="date" value="'+esc(tripFilters.date)+'"></label>'+
+   '<label>Driver<select data-trip-field="driver">'+options('driver',[['','All drivers'],...state.drivers.map(d=>[d.id,d.name])])+'</select></label>'+
+   '<label>Service<select data-trip-field="service">'+options('service',[['','All services'],['standard','Standard'],['accessible','Wheelchair accessible']])+'</select></label>'+
+   '<label>Source<select data-trip-field="source">'+options('source',[['','All sources'],['lgtc','LGTC'],['booking','Other bookings'],['sample','Test data']])+
+   '</select></label><button type="button" class="btn small" id="reset-trip-filters">Reset filters</button></div>';
+ return '<section class="simple-page-head"><div><h1>Trips</h1><p>'+view.counts.all+' records</p></div><div></div></section>'+ '<section class="bookings-panel trips-workspace">'+tripWorkspaceControls()+fields+'<div class="bookings-filters"><label class="search">'+icon('search')+'<input id="trip-search" type="search" placeholder="Customer, mobile or booking" aria-label="Search trips" value="'+esc(search)+'"></label><select id="booking-order" aria-label="Pickup order">' + [['next','Next pickup first'],['latest','Latest pickup first'],['past','Past trips only']].map(([key,label]) => '<option value="'+key+'" '+(bookingOrder===key?'selected':'')+'>'+label+'</option>').join('') + '</select><select id="booking-status" aria-label="Booking status">'+[['all','All statuses'],['upcoming','Upcoming'],['waiting','Waiting'],['offered','Offer sent'],['assigned','Assigned'],['attention','Needs attention'],['completed','Completed'],['cancelled','Cancelled']].map(([key,label])=>'<option value="'+key+'" '+(filter===key?'selected':'')+'>'+label+'</option>').join('')+'</select><select id="trip-data-scope" aria-label="Booking records">'+bookingScopeOptions()+'</select></div><div class="bookings-filters trips-actions"><button type="button" class="btn small" id="refresh-trip-list">Refresh list</button>'+(view.total?'<button type="button" class="btn small" id="export-trip-list">Export filtered CSV</button>':'<button class="btn small" disabled>Export filtered CSV</button>')+'<span id="bulk-trip-count" aria-live="polite">0 selected</span><button class="btn small" data-bulk-action="assign" disabled>Assign driver</button><button class="btn small" data-bulk-action="unassign" disabled>Unassign driver</button><button class="btn small" data-bulk-action="will-call" disabled>Update will-call</button></div><div id="trip-results">'+simpleTripTable(view.rows)+'</div><div class="pagination"><span>'+view.start+'–'+view.end+' of '+view.total+'</span><button class="btn small" data-board-page="'+(view.page-1)+'" '+(view.page<=1?'disabled':'')+'>Previous</button><small>'+view.page+' / '+view.pages+'</small><button class="btn small" data-board-page="'+(view.page+1)+'" '+(view.page>=view.pages?'disabled':'')+'>Next</button></div></section>';
+}
+function openBulkTripAction(action) {
+  const ids = [...document.querySelectorAll('[data-bulk-trip]:checked')].map(input => input.value);
+  const title = {assign:'Assign driver',unassign:'Unassign driver','will-call':'Update will-call'}[action];
+  if (!ids.length) return;
+  modal('<h2>'+title+'</h2><p>'+ids.length+' selected rides</p><form id="bulk-trip-form">'+
+    (action === 'assign' ? '<label>Driver<select name="driverId" required><option value="">Choose driver</option>'+
+      state.drivers.map(driver=>'<option value="'+esc(driver.id)+'">'+esc(driver.name)+'</option>').join('')+
+      '</select></label><p>Future rides are reserved. Drivers accept offers when dispatch opens.</p>' :
+      action === 'will-call' ? '<label>Confirmed pickup (device local time)<input name="pickup" type="datetime-local"></label><p>Leave blank to mark as will-call. Enter a time to confirm pickup for every selected will-call ride.</p>' :
+      '<p>Remove the assignment or offer and pause automatic dispatch for these rides.</p>')+
+    '<button class="btn primary" type="submit">'+title+'</button></form>');
+  $('#bulk-trip-form').onsubmit = event => {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget), button = event.submitter;
+    button.disabled = true;
+    run(async () => {
+      try {
+        const pickup = fields.get('pickup');
+        if (pickup && !Number.isFinite(Date.parse(pickup))) throw Error('Choose a valid pickup time.');
+        const result = await api('/api/trips/bulk',{action,ids,driverId:fields.get('driverId'),pickupAt:pickup ? Date.parse(pickup) : null});
+        $('#modal').close();
+        await refresh();
+        toast(result.count+' rides updated.');
+      } finally { button.disabled = false; }
+    });
+  };
 }
 function simpleTripTable(trips) {
   if (!trips.length) return '<div class="empty"><h3>No trips in this group</h3><p>Choose another group or import your planned rides.</p></div>';
-  return '<div class="table-scroll"><table class="simple-trips"><thead><tr><th>Pickup time</th><th>Trip / customer</th><th>Journey</th><th>Driver</th><th>Status</th><th></th></tr></thead><tbody>' + trips.map(t => {
+  return '<div class="table-scroll"><table class="simple-trips"><thead><tr><th><input type="checkbox" id="bulk-trip-all" aria-label="Select rides on this page"></th><th>Pickup / end</th><th>Trip / customer</th><th>Journey</th><th>Service / source</th><th>Driver</th><th>Status</th><th></th></tr></thead><tbody>' + trips.map(t => {
     const g = ProLiftBoard.group(t,Date.now(),dispatchLead()), pending = state.offers.find(o => o.tripId === t.id && o.status === 'pending' && o.expiresAt > Date.now());
     const d = state.drivers.find(d => d.id === (t.driverId || pending?.driverId));
     const driverLabel = d ? esc(d.name) : '—';
     const status = { waiting:'Waiting',offered:'Waiting for driver',assigned:'Assigned',attention:'Needs attention',completed:'Completed',cancelled:'Cancelled' }[g];
     const note = ProLiftBoard.attentionReason(t,Date.now(),dispatchLead()) || ProLiftRideExplanation.explain(state,t,user.role).meaning;
-    return '<tr class="' + (g === 'attention' ? 'flagged-row' : '') + '"><td><strong>' + time(t.pickupAt) + '</strong><small>' + date(t.pickupAt) + '</small></td><td><button class="text-btn trip-ref" data-detail="' + t.id + '">' + esc(t.reference) + '</button><small>' + esc(t.customerName) +(t.poolParentId?' · Shared booking':'')+(t.preferredDriver?' · Regular: '+esc(t.preferredDriver.name):'')+'</small>'+(t.demoRunId?fleetBadge(fleetIdentity(sourceForTrip(t)||'unknown')):'')+'</td><td>' + esc(t.pickup) + '<small>→ ' + esc(t.destination) + '</small></td><td><strong>' + driverLabel + '</strong></td><td><span class="badge ' + (g === 'attention' ? 'danger' : g === 'assigned' ? 'completed' : g) + '">' + status + '</span><small>' + note + '</small></td><td><button class="btn small" data-detail="' + t.id + '">' + (g === 'attention' ? 'Review' : 'View') + '</button></td></tr>';
+    return '<tr class="' + (g === 'attention' ? 'flagged-row' : '') + '"><td><input type="checkbox" data-bulk-trip aria-label="Select ride ' + esc(t.reference) + '" value="' + esc(t.id) + '"' + (t.isSharedRun || t.poolParentId || !['awaiting_driver','needs_reassignment','offered','accepted'].includes(t.status) ? ' disabled' : '') + '></td><td><strong>' + (t.willCall ? 'Will-call' : time(t.pickupAt)) + '</strong><small>' + date(t.pickupAt) + (t.plannedEndAt ? ' · Ends ' + time(t.plannedEndAt) : '') + '</small></td><td><button class="text-btn trip-ref" data-detail="' + t.id + '">' + esc(t.reference) + '</button><small>' + esc(t.customerName) +(t.poolParentId?' · Shared booking':'')+(t.preferredDriver?' · Regular: '+esc(t.preferredDriver.name):'')+'</small>'+(t.demoRunId?fleetBadge(fleetIdentity(sourceForTrip(t)||'unknown')):'')+'</td><td>' + esc(t.pickup) + '<small>→ ' + esc(t.destination) + '</small></td><td>' + (t.requirements?.includes('wheelchair') ? 'Wheelchair accessible' : 'Standard') + '<small>' + (t.lgtc ? 'LGTC' : t.demoRunId || t.testData ? 'Test data' : 'Other booking') + '</small></td><td><strong>' + driverLabel + '</strong></td><td><span class="badge ' + (g === 'attention' ? 'danger' : g === 'assigned' ? 'completed' : g) + '">' + status + '</span><small>' + note + '</small></td><td><button class="btn small" data-detail="' + t.id + '">' + (g === 'attention' ? 'Review' : 'View') + '</button></td></tr>';
   }).join('') + '</tbody></table></div>';
 }
 function importsPage() {
   if (config.publicDemo) return heading('PLANNED RIDES', 'Try the sample rides.', 'The public demo uses built-in test data. File uploads are available in the local demo.');
-  const files = '<p><a class="btn" href="/api/template">Download Excel template</a></p>' +
-    `<div class="import-grid"><section class="panel upload-panel"><span class="upload-symbol">${icon('upload')}</span><h2>Upload a trip file</h2><p>LGTC or ProLift Excel/CSV · Up to 1,000 trips · Maximum 5 MB</p><label class="file-label">Choose file<input id="import-file" type="file" accept=".xlsx,.csv"></label><p class="help">Upload the LGTC export as received. The local planning copy keeps references, times and stop cities. Keep the original for rider details and instructions.</p><div id="upload-progress" aria-live="polite"></div></section><section class="panel" id="lgtc-history"><h2>Saved LGTC schedules</h2>${lgtcHistoryView()}</section></div>${state.imports.length ? '<section class="panel"><details><summary>Recent ProLift template imports</summary>' + state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details></section>' : ''}`;
-  if (batch?.kind === 'lgtc') return lgtcPreview(files);
-  return files + (batch ? previewImport() : '');
+  const sources=tab==='trip-sources';
+  if (sources) return '<div class="trip-source-page">'+heading('TRANSPORT','Trip Sources','Upload LGTC or Excel and open a saved schedule.')+
+    '<div class="trip-source-cards">'+
+    '<section class="panel source-card"><span class="source-card-icon" aria-hidden="true">'+icon('upload')+'</span><h2>Upload trip file</h2>'+
+    '<p>LGTC or Excel/CSV · Up to 1,000 trips · 5 MB</p><label class="btn primary source-file-picker">Choose file<input id="import-file" type="file" accept=".xlsx,.csv"></label><div id="upload-progress" aria-live="polite"></div>'+
+    '<details><summary>Upload guidance</summary><p>Use the original LGTC export. Keep it for rider details and instructions.</p></details></section>'+
+    '<section class="panel source-card" id="lgtc-history"><span class="source-card-icon source-schedule-icon" aria-hidden="true">'+icon('clock')+'</span><h2>Saved LGTC schedules</h2>'+lgtcHistoryView()+'</section>'+
+    '<section class="panel source-card"><span class="source-card-icon source-extra-icon" aria-hidden="true">'+icon('plus')+'</span><h2>Additional source</h2>'+
+    '<details><summary>Name this source</summary><label>Source name <input id="additional-source-name" placeholder="Name it later" maxlength="80"></label></details></section></div>'+
+    '<a class="btn small source-template" href="'+location.pathname.replace(/\/$/,'')+'/api/template">Download Excel template</a>'+
+    (state.imports.length?'<details class="panel source-import-history"><summary>Recent ProLift template imports</summary>'+
+      state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details>':'')+
+    (batch&&batch.kind!=='lgtc'?previewImport():'')+'</div>';
+  if (location.port === '4783' && location.pathname === '/owner/') {
+    return heading('TRANSPORT','Route Workbench','Review the imported LGTC schedule and driver assignments.') +
+      '<iframe title="MongoDB LGTC day plan" src="/owner/day-plan?view=workbench" style="display:block;width:100%;height:75vh;border:0"></iframe>';
+  }
+  const title=heading('TRANSPORT','Route Workbench','Build driver routes and review rides before dispatch.', '<button class="btn" id="design-vehicle-plan">Plan bookings</button><button class="btn" data-driver-day="">Driver day</button>');
+  const schedules='<section class="panel" id="lgtc-history"><h2>Saved LGTC schedules</h2>'+lgtcHistoryView()+'</section>';
+  const hasSchedule = batch?.kind === 'lgtc';
+  const steps = [
+    ['map','Plan','Build routes and review unassigned rides','data-workbench-section="plan"'],
+    ['check','Approve','Review rides before sending them to dispatch','data-workbench-section="approve"'],
+    ['car','Track','Watch drivers and ride progress','data-go="overview"']
+  ];
+  const flow = '<ol class="workbench-flow" aria-label="Ride planning workflow">'+steps.map(([symbol,label,text,action],index)=>
+    '<li'+(index===0?' aria-current="step"':'')+'><button type="button" '+action+'><span class="workbench-step-icon" aria-hidden="true">'+icon(symbol)+'</span><span><strong>'+label+'</strong><small>'+text+'</small></span></button></li>').join('')+'</ol>';
+  return title+flow+(hasSchedule?lgtcPreview(schedules):schedules);
 }
 function previewImport() {
   const invalid = batch.rows.filter(r => r.errors.length).length;
   return `<section class="panel"><div class="panel-heading"><div><h2>Review your import</h2><p>${batch.rows.length} rows · ${invalid} with errors. ${batch.confirmed ? 'Already imported.' : 'All rows must be valid. Automatic dispatch uses your configured pickup window.'}</p></div><button class="btn primary" id="confirm-import" ${invalid || batch.confirmed ? 'disabled' : ''}>${icon('check')} ${batch.confirmed ? 'Imported' : 'Confirm import'}</button></div><div class="table-scroll"><table><thead><tr><th>Row</th><th>Trip</th><th>Customer</th><th>Pickup</th><th>Validation</th></tr></thead><tbody>${batch.rows.map(r => `<tr><td>${r.row}</td><td>${esc(r.trip_id)}</td><td>${esc(r.customer_name)}</td><td>${esc(r.pickup)}<small>${esc(r.pickup_at)}</small></td><td>${r.errors.length ? `<span class="validation-error">${r.errors.map(esc).join('<br>')}</span>` : badge('valid')}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 function fleetPage() { return heading('LIVE OPERATIONS', 'Stay close to your fleet.', 'Location freshness and driver status, updated over a live connection.') + `<div class="overview-grid fleet-large"><section class="panel">${mapView()}</section><section class="panel"><div class="panel-heading"><h2>Working drivers</h2></div><div class="driver-list">${driverRows()}</div></section></div><div class="notice">${icon('map')} This is a schematic with simulated GPS. Real Google maps and phone GPS are separate production integrations.</div>`; }
-function driversPage() { return heading('YOUR TEAM', 'The people behind every pickup.', 'Availability, vehicles, and current work in one place.') + `<div class="driver-cards">${state.drivers.map(d => { const t = state.trips.find(t => !t.poolParentId && t.driverId === d.id && active(t)); return `<article class="panel driver-card"><div class="driver-card-top"><span class="avatar large">${esc(d.name.split(' ').map(x => x[0]).join(''))}</span>${badge(d.status)}</div><h2>${esc(d.name)}</h2><p>${esc(d.vehicle)} · ${esc(d.plate)}</p><div class="specs"><span>${d.seats} passenger seats</span><button class="btn small" data-capacity="${d.id}">Set 4 / 7 seats</button><span>${d.capabilities.length ? 'Wheelchair accessible' : 'Standard vehicle'}</span></div><div class="driver-assignment">${t ? `<small>CURRENT TRIP</small><button class="text-btn" data-detail="${t.id}">${esc(t.reference)} ${icon('arrow')}</button><p>${esc(t.pickup)}</p>` : '<small>NO ACTIVE TRIP</small><p>Ready for the next assignment.</p>'}</div><small class="muted">Last location ${Number.isFinite(d.lastLocationAt) ? time(d.lastLocationAt) : "unavailable"}</small><button class="btn small" data-driver-day="${esc(d.id)}">Driver day</button></article>`; }).join('')}</div>`; }
-function activityPage() { return heading('ACCOUNTABILITY', 'Every update has a history.', 'Assignments, driver drops, trip updates, and import activity.') + `<section class="panel">${state.events.length ? state.events.slice(0, 100).map(e => `<div class="activity-row">${icon(e.type.includes('reassignment') ? 'flag' : 'clock')}<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><span>${esc(e.reference || '')} · ${esc(e.actor)}</span><small>${esc(e.detail)}</small></div><time>${date(e.at)} · ${time(e.at)}</time></div>`).join('') : '<div class="empty"><p>Activity appears as your team works.</p></div>'}</section>`; }
+function importedFleetPanel() {
+  return '<section class="panel upload-panel" id="imported-fleet"><h2>Fleet records</h2><div class="card-actions"><button class="btn" data-add-fleet="vehicle">Add vehicle</button><button class="btn" data-add-fleet="driver">Add driver</button></div><details class="fleet-setup-disclosure"><summary>Fleet setup</summary><p>Save a vehicle and weekly Eastern shift for an existing driver account. Date-specific shifts take priority.</p><form id="fleet-setup"><label>Driver account<select name="account" required></select></label><label>Imported driver<select name="importedDriver" required></select></label><label>Vehicle<select name="vin" required></select></label><label>Passenger seats<input name="seats" type="number" min="1" max="7" required></label><label>Wheelchair accessibility<select name="accessible" required><option value="">Choose…</option><option value="no">Standard</option><option value="yes">Wheelchair accessible</option></select></label><fieldset><legend>Weekly workdays</legend>'+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((label,index)=>'<label><input type="checkbox" name="day" value="'+index+'"> '+label+'</label>').join('')+'</fieldset><label>Shift starts (ET)<input name="start" type="time" required></label><label>Shift ends (ET)<input name="end" type="time" required></label><button class="btn primary">Save fleet setup</button><p class="fleet-setup-result" aria-live="polite"></p></form></details><div class="bookings-filters"><label>Record type<select name="kind"><option value="vehicle">Vehicles</option><option value="driver">Drivers</option></select></label><label>Search records<input type="search" name="query"></label><label>Vehicle status<select name="status"><option value="">All statuses</option></select></label></div><p role="status"></p><div class="table-scroll"></div></section>';
+}
+function bindImportedFleet() {
+  const panel = $('#imported-fleet');
+  if (!panel) return;
+  const kind = panel.querySelector('[name="kind"]');
+  const query = panel.querySelector('[name="query"]');
+  const status = panel.querySelector('[name="status"]');
+  const message = panel.querySelector('[role="status"]');
+  const table = panel.querySelector('.table-scroll');
+  panel.querySelectorAll('[data-add-fleet]').forEach(button=>button.onclick=()=>{
+    const type=button.dataset.addFleet,vehicle=type==='vehicle';
+    modal('<h2>Add '+type+'</h2><form id="new-fleet-record"><label>Name<input name="name" required maxlength="100"></label>'+
+      (vehicle?'<label>VIN<input name="vin" required minlength="17" maxlength="17"></label><label>Year<input name="year" maxlength="4"></label><label>Make<input name="make"></label><label>Model<input name="model"></label><label>Status<select name="status"><option>Enabled</option><option>Disabled</option></select></label><label>Vehicle photo<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label>':
+        location.port==='4781'?'<p>Save the driver record here. Use the private Owner workspace to upload licenses and contracts.</p>':'<label>Driver license photo<input type="file" name="license" accept="image/jpeg,image/png,image/webp"></label><label>Contract<input type="file" name="contract" accept="application/pdf,image/jpeg,image/png,image/webp"></label>')+
+      '<button class="btn primary">Save '+type+'</button></form>');
+    $('#new-fleet-record').onsubmit=event=>{
+      event.preventDefault();
+      run(async()=>{
+        const button=event.submitter;
+        button.disabled=true;
+        try{
+          const record={kind:type};
+          for(const [key,value] of new FormData(event.target)){
+            if(typeof value==='string')record[key]=value;
+            else if(value.size){
+              if(value.size>2000000)throw Error('Files must be 2 MB or smaller.');
+              record[key]=await new Promise((resolve,reject)=>{
+                const reader=new FileReader();
+                reader.onload=()=>resolve(reader.result);
+                reader.onerror=()=>reject(Error('Could not read the file.'));
+                reader.readAsDataURL(value);
+              });
+            }
+          }
+          await api('/api/fleet-record',record);
+          $('#modal').close();render();toast('Fleet record saved.');
+        }finally{button.disabled=false;}
+      });
+    };
+  });
+  message.textContent = 'Loading fleet records…';
+  api('/api/fleet-import?list=1').then(({records,setupReadOnly}) => {
+    if (setupReadOnly) {
+      panel.querySelector('.fleet-setup-disclosure').hidden = true;
+      panel.querySelector('[data-add-fleet]').parentElement.hidden = true;
+    }
+    const vehicles = records.filter(row=>row.kind==='vehicle');
+    const drivers = records.filter(row=>row.kind==='driver');
+    const setup = panel.querySelector('#fleet-setup');
+    const fields = setup.elements;
+    const accounts = state.drivers.filter(driver=>!driver.demoRunId);
+    const options = (field, items) => field.replaceChildren(new Option('Choose…',''), ...items.map(([label,value])=>new Option(label,value)));
+    options(fields.account,accounts.map(driver=>[driver.name,driver.id]));
+    options(fields.importedDriver,drivers.map(driver=>[driver.name,driver.name.toLowerCase()]));
+    options(fields.vin,vehicles.filter(vehicle=>vehicle['Vehicle Status']?.toLowerCase()==='enabled').map(vehicle=>{
+      const vin=vehicle['Vehicle Identification Number (VIN)'];
+      return [[vehicle['Vehicle Name'],vehicle.Make,vehicle.Model,vin].filter(Boolean).join(' · '),vin];
+    }));
+    const clockText = value => Number.isInteger(value) && value<1440 ? String(Math.floor(value/60)).padStart(2,'0')+':'+String(value%60).padStart(2,'0') : '';
+    fields.account.onchange = () => {
+      const driver=accounts.find(item=>item.id===fields.account.value);
+      fields.importedDriver.value=driver?.importedDriver||'';
+      fields.vin.value=driver?.vehicleId||'';
+      fields.seats.value=driver?.importedDriver ? driver.seats : '';
+      fields.accessible.value=driver?.importedDriver ? (driver.capabilities.includes('wheelchair')?'yes':'no') : '';
+      fields.start.value=clockText(driver?.recurringShift?.start);
+      fields.end.value=clockText(driver?.recurringShift?.end);
+      for (const day of fields.day) day.checked=!!driver?.recurringShift?.days.includes(Number(day.value));
+    };
+    const queued = new Map();
+    const controls = document.createElement('div');
+    controls.innerHTML = '<button type="submit" class="btn" value="queue">Add to bulk setup</button> <button type="button" class="btn" disabled>Save all queued links</button><ul aria-label="Queued fleet links"></ul>';
+    setup.append(controls);
+    const bulkSave = controls.querySelector('[type=button]');
+    const queueList = controls.querySelector('ul');
+    const result = setup.querySelector('.fleet-setup-result');
+    function showQueue() {
+      bulkSave.disabled = !queued.size;
+      queueList.replaceChildren(...[...queued.values()].map(entry=>{
+        const row=document.createElement('li');
+        row.textContent=accounts.find(driver=>driver.id===entry.driverId).name+' · '+entry.vin+' · ';
+        const remove=document.createElement('button');
+        remove.type='button';
+        remove.textContent='Remove';
+        remove.onclick=()=>{queued.delete(entry.driverId);showQueue();};
+        row.append(remove);
+        return row;
+      }));
+    }
+    bulkSave.onclick = async () => {
+      bulkSave.disabled=true;
+      try {
+        const {count}=await api('/api/fleet-setup',{entries:[...queued.values()]});
+        queued.clear();
+        result.textContent=count+' fleet links saved.';
+      } catch(error) { result.textContent=error.message; }
+      finally { showQueue(); }
+    };
+    setup.onsubmit = async event => {
+      event.preventDefault();
+      const button=event.submitter;
+      const minute=value=>Number(value.slice(0,2))*60+Number(value.slice(3));
+      const entry={driverId:fields.account.value,importedDriver:fields.importedDriver.value,
+        vin:fields.vin.value,seats:Number(fields.seats.value),accessible:fields.accessible.value==='yes',
+        days:[...fields.day].filter(day=>day.checked).map(day=>Number(day.value)),
+        start:minute(fields.start.value),end:minute(fields.end.value)};
+      if (!entry.days.length || entry.start>=entry.end) {
+        result.textContent='Choose workdays and an end time after the start.';
+        return;
+      }
+      if (button.value==='queue') {
+        queued.set(entry.driverId,entry);
+        showQueue();
+        result.textContent='Link queued. Choose another account or save all queued links.';
+        return;
+      }
+      button.disabled=true;
+      try {
+        await api('/api/fleet-setup',entry);
+        result.textContent='Fleet setup saved.';
+      } catch(error) { result.textContent=error.message; }
+      finally { button.disabled=false; }
+    };
+    const statuses = [...new Set(vehicles.map(row=>row['Vehicle Status']).filter(Boolean))].sort();
+    for (const value of statuses) status.add(new Option(value,value));
+    const vehiclePhotos = new Map();
+    function renderVehiclePhoto(button, vin) {
+      const thumb = button.querySelector('.fleet-vehicle-thumb');
+      if (!thumb || !vin) return;
+      if (!vehiclePhotos.has(vin)) vehiclePhotos.set(vin,
+        api('/api/fleet-record?kind=vehicle&key='+encodeURIComponent(vin)).then(({files})=>files.photo).catch(()=>null));
+      vehiclePhotos.get(vin).then(photo=>{
+        if (!photo || !thumb.isConnected) return;
+        const image = document.createElement('img');
+        image.alt = '';
+        image.onload = ()=>thumb.replaceChildren(image);
+        image.src = photo;
+      });
+    }
+    let recordPage = 1;
+    const size = document.createElement('label');
+    size.textContent = 'Records per page ';
+    size.insertAdjacentHTML('beforeend','<select><option>10</option><option>50</option><option>100</option><option>200</option></select>');
+    const limit = size.querySelector('select');
+    size.className = 'fleet-page-size';
+    const recordBar = document.createElement('div');
+    recordBar.className = 'fleet-record-bar';
+    message.before(recordBar);
+    recordBar.append(message,size);
+    const pager = document.createElement('nav');
+    pager.className = 'pagination';
+    pager.setAttribute('aria-label','Fleet record pages');
+    table.after(pager);
+    function show() {
+      const isVehicle = kind.value==='vehicle';
+      status.disabled = !isVehicle;
+      const source = isVehicle ? vehicles : drivers;
+      const columns = isVehicle ? ['Vehicle Name','Year','Make','Model','Vehicle Status','Last Known Driver'] : ['name','Driver Status'];
+      const needle = query.value.trim().toLowerCase();
+      const matching = source.filter(row=>(!isVehicle || !status.value || row['Vehicle Status']===status.value) &&
+        columns.some(key=>String(row[key] ?? '').toLowerCase().includes(needle)));
+      const pageSize = Number(limit.value);
+      const pages = Math.max(1, Math.ceil(matching.length/pageSize));
+      const start = (recordPage-1)*pageSize;
+      const end = Math.min(start+pageSize,matching.length);
+      message.textContent = matching.length ? (start+1)+'–'+end+' of '+matching.length+(isVehicle?' vehicles':' drivers') : 'No matching records';
+      pager.hidden = pages <= 1;
+      pager.innerHTML = '<button class="btn small" data-record-step="-1" '+(recordPage===1?'disabled':'')+'>Previous</button>'+
+        '<span>Page '+recordPage+' of '+pages+'</span><button class="btn small" data-record-step="1" '+
+        (recordPage===pages?'disabled':'')+'>Next</button>';
+      table.innerHTML = '<table><thead><tr>'+columns.map(key=>'<th scope="col">'+esc(key==='name'?'Driver name':key)+'</th>').join('')+
+        '</tr></thead><tbody>'+matching.slice(start,end).map((row,index)=>'<tr>'+columns.map((key,column)=>'<td>'+(column===0?'<button class="text-btn" data-fleet-record="'+(start+index)+'">'+(isVehicle?'<span class="fleet-vehicle-thumb" aria-hidden="true">'+icon('car')+'</span>':'')+esc(row[key]||'View record')+'</button>':esc(row[key] || '—'))+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+      if (isVehicle) table.querySelectorAll('[data-fleet-record]').forEach(button=>{
+        const row = matching[Number(button.dataset.fleetRecord)];
+        renderVehiclePhoto(button,row.recordKey ?? row['Vehicle Identification Number (VIN)']?.toUpperCase());
+      });
+    }
+    table.onclick=event=>{
+      const button=event.target.closest('[data-fleet-record]');
+      if(!button)return;
+      run(async()=>{
+        const type=kind.value,vehicle=type==='vehicle';
+        const source=vehicle?vehicles:drivers;
+        const columns=vehicle?['Vehicle Name','Year','Make','Model','Vehicle Status','Last Known Driver']:['name','Driver Status'];
+        const needle=query.value.trim().toLowerCase();
+        const row=source.filter(item=>(!vehicle||!status.value||item['Vehicle Status']===status.value)&&
+          columns.some(key=>String(item[key]??'').toLowerCase().includes(needle)))[Number(button.dataset.fleetRecord)];
+        if(!row)return;
+        const key=row.recordKey ?? (vehicle?row['Vehicle Identification Number (VIN)']?.toUpperCase():row.name.toLowerCase());
+        const {files}=await api('/api/fleet-record?kind='+type+'&key='+encodeURIComponent(key||''));
+        const statusField=vehicle?'Vehicle Status':'Driver Status';
+        const disabled=row[statusField]==='Disabled';
+        const facts=vehicle?['Year','Make','Model','Vehicle Identification Number (VIN)','Last Known Driver']:[];
+        modal('<article class="fleet-record-card"><header><span class="source-card-icon">'+icon(vehicle?'car':'users')+'</span><div><small>'+ (vehicle?'Vehicle':'Driver')+
+          '</small><h2>'+esc(row[columns[0]])+'</h2></div></header>'+
+          (files.photo?'<img class="fleet-record-photo" alt="Vehicle photo" src="'+esc(files.photo)+'">':'')+
+          (facts.length?'<dl>'+facts.map(field=>'<div><dt>'+esc(field==='Vehicle Identification Number (VIN)'?'VIN':field)+'</dt><dd>'+esc(row[field]||'—')+'</dd></div>').join('')+'</dl>':'')+
+          ['license','contract'].filter(name=>files[name]).map(name=>'<p><a download="driver-'+name+(files[name].startsWith('data:application/pdf')?'.pdf':files[name].startsWith('data:image/png')?'.png':files[name].startsWith('data:image/webp')?'.webp':'.jpg')+'" href="'+esc(files[name])+'">Download '+name+'</a></p>').join('')+
+          '<footer><span class="badge '+(disabled?'danger':'online')+'" id="fleet-record-status">'+(disabled?'Disabled':'Enabled')+'</span><button class="btn '+(disabled?'primary':'danger-text')+'" id="change-fleet-record-status">'+(disabled?'Enable ':'Disable ')+type+'</button></footer><p id="fleet-record-feedback" role="status"></p></article>');
+        const toggle=$('#change-fleet-record-status');
+        toggle.onclick=async()=>{
+          toggle.disabled=true;
+          try {
+            const result=await api('/api/fleet-record/status',{kind:type,key,disabled:row[statusField]!=='Disabled'});
+            row[statusField]=result.status;
+            const inactive=result.status==='Disabled';
+            $('#fleet-record-status').textContent=result.status;
+            $('#fleet-record-status').className='badge '+(inactive?'danger':'online');
+            toggle.textContent=(inactive?'Enable ':'Disable ')+type;
+            toggle.className='btn '+(inactive?'primary':'danger-text');
+            recordPage=1;
+            show();
+            $('#fleet-record-feedback').textContent='Status saved.';
+          } catch (error) { $('#fleet-record-feedback').textContent=error.message; }
+          finally { toggle.disabled=false; }
+        };
+      });
+    };
+    pager.onclick = event => {
+      const button = event.target.closest('[data-record-step]');
+      if (!button || button.disabled) return;
+      recordPage += Number(button.dataset.recordStep);
+      show();
+      message.scrollIntoView({block:'nearest'});
+    };
+    kind.onchange = status.onchange = limit.onchange = query.oninput = () => { recordPage=1; show(); };
+    show();
+  }).catch(error=>{message.textContent=error.message;});
+}
+const mongoOwnerFleet = location.port === '4783' && location.pathname === '/owner/';
+const mongoLiveReplay = mongoOwnerFleet && !new URLSearchParams(location.search).has('acceptance');
+let fleetPageTab = mongoOwnerFleet ? 'records' : 'live';
+function driversPage() {
+  const tabs = '<nav class="fleet-page-tabs filter-tabs" aria-label="Drivers and vehicles views">'+
+    [['live',mongoOwnerFleet ? 'Acceptance test roster' : 'Live roster'],['records','Fleet records']].map(([key,label])=>
+      '<button type="button" data-fleet-page-tab="'+key+'" aria-pressed="'+(fleetPageTab===key)+'" class="'+(fleetPageTab===key?'selected':'')+'">'+label+'</button>').join('')+'</nav>';
+  const title = heading('YOUR TEAM','Drivers &amp; vehicles','Availability, vehicles, and current work in one place.');
+  if (fleetPageTab === 'records') return title+tabs+importedFleetPanel();
+  const roster = ProLiftBoard.fleet(state,lastSnapshotAt || Date.now()).filter(({driver})=>!driver.demoRunId); return title + tabs + `<section class="panel fleet-roster"><h2>Live dispatch roster</h2><div class="dispatch-roster-counts"><span><strong>${roster.length}</strong> Drivers</span><span><strong>${roster.filter(({status,driver})=>status==='available'&&!driver.driverDisabled&&!driver.vehicleDisabled).length}</strong> Available</span><span><strong>${roster.filter(({driver})=>driver.status==='busy').length}</strong> On ride</span><span><strong>${roster.filter(({driver})=>driver.status==='offline').length}</strong> Offline</span></div><label>Find a driver or vehicle <input id="fleet-roster-search" type="search"></label><p id="fleet-roster-empty" hidden>No matching drivers.</p><div class="fleet-roster-list">${roster.map(item => { const {driver:d,trip:t} = item; return `<details class="fleet-roster-row" data-live-roster-id="${esc(d.id)}"><summary>${fleetDriverAvatar(d)}<strong>${esc(d.name)}</strong><span>${esc([d.vehicle,d.plate].filter(Boolean).join(' · '))}</span>${badge(d.driverDisabled||d.vehicleDisabled?'disabled':d.status)}<small>${esc(dutyLocation(item))}${t?' · '+esc(t.reference):''}</small></summary><div class="fleet-roster-detail"><div class="specs"><span>${d.seats} passenger seats</span><button class="btn small" data-capacity="${d.id}">Set 4 / 7 seats</button><span>${d.capabilities.length ? 'Wheelchair accessible' : 'Standard vehicle'}</span></div><div class="driver-assignment">${t ? `<small>CURRENT TRIP</small><button class="text-btn" data-detail="${t.id}">${esc(t.reference)} ${icon('arrow')}</button><p>${esc(t.pickup)}</p>` : '<small>NO ACTIVE TRIP</small><p>No ride assigned.</p>'}</div><small class="muted">Last location ${Number.isFinite(d.lastLocationAt) ? time(d.lastLocationAt) : "unavailable"}</small><button class="btn small" data-driver-day="${esc(d.id)}">Driver day</button><button class="btn small" data-driver-documents="${esc(d.id)}">Driver documents</button>${user.role === 'owner' ? ['driver','vehicle'].map(kind=>`<button class="btn small" data-fleet-kind="${kind}" data-fleet-driver="${esc(d.id)}" data-fleet-disabled="${!d[kind+'Disabled']}">${d[kind+'Disabled']?'Enable':'Disable'} ${kind}</button>`).join('') : ''}</div></details>`; }).join('')}</div></section>`; }
+function activityPage() { return heading('ACCOUNTABILITY', 'Activity log', 'Assignments, driver drops, trip updates, and import activity.') + `<section class="panel">${state.events.length ? state.events.slice(0, 100).map(e => `<div class="activity-row">${icon(e.type.includes('reassignment') ? 'flag' : 'clock')}<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><span>${esc(e.reference || '')} · ${esc(e.actor)}</span><small>${esc(e.detail)}</small></div><time>${date(e.at)} · ${time(e.at)}</time></div>`).join('') : '<div class="empty"><p>Activity appears as your team works.</p></div>'}</section>`; }
 function pairedRideLabel(trip) {
   if (!trip.lgtc?.pairedReference) return '';
   const paired = state.trips.find(other => other.customerPhone === trip.customerPhone &&
@@ -850,24 +1498,51 @@ function pairedRideLabel(trip) {
     (paired && user.role === 'customer' ? '<button type="button" class="text-btn" data-customer-paired-ride="' + esc(paired.id) +
       '">Open paired ride ' + esc(trip.lgtc.pairedReference) + '</button>' : 'Paired ride ' + esc(trip.lgtc.pairedReference)) + '</p>';
 }
-function tripCard(t) {
-  const driver = state.drivers.find(d => d.id === t.driverId) || (t.status==='completed'?t.confirmedDriver:null), offer = state.offers.find(o => o.tripId === t.id && o.status === 'pending' && o.expiresAt > Date.now());
-  return `<article class="panel trip-card ${t.redFlag ? 'flagged-card' : ''}"><div class="trip-card-head"><strong>${esc(t.reference)}</strong>${badge(t.status, t.redFlag)}</div>${pairedRideLabel(t)}<div class="trip-card-time"><strong>${time(t.pickupAt)}</strong><span>${date(t.pickupAt)} · ${t.passengers} passenger${t.passengers > 1 ? 's' : ''}</span></div><div class="journey"><div><span class="journey-dot"></span><small>PICKUP</small><strong>${esc(t.pickup)}</strong></div><div><span class="journey-dot end"></span><small>DESTINATION</small><strong>${esc(t.destination)}</strong></div></div>${t.isSharedRun?'<section class="shared-run-preview notice"><strong>Shared run · '+t.passengers+' passengers · '+(t.collectedStops||0)+' / '+t.sharedStops.length+' pickups collected</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+time(x.plannedAt)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s)'+(i<(t.collectedStops||0)?' · Onboard':i===(t.collectedStops||0)?' · NEXT':'')+'</li>').join('')+'</ol></section>':''}${user.role === 'driver' ? `<div class="trip-customer">${icon('users')} ${esc(t.customerName)}${t.isSharedRun?' · Follow pickup order':' · '+esc(t.customerPhone)}</div>` : driver ? `<div class="trip-customer">${icon('car')} ${esc(driver.name)} · ${esc(driver.vehicle)} · ${esc(driver.plate)}</div>` : '<p class="muted">Dispatch will confirm your driver.</p>'}${offer && user.role === 'driver' ? `<div class="offer-note"><span data-offer-countdown="${offer.expiresAt}">${Math.max(0,Math.ceil((offer.expiresAt-Date.now())/1000))} seconds to respond</span> · ${offer.etaSource==='road'?'Road':'Simulated'} pickup ETA ${offer.eta} min</div><div class="card-actions"><button class="btn primary" data-trip="${t.id}" data-action="accept" data-offer="${offer.id}">Accept trip</button><button class="btn" data-trip="${t.id}" data-action="decline" data-offer="${offer.id}">Decline</button></div>` : `${user.role==='customer'&&t.confirmedDriver&&active(t)?'<div class="confirmed-driver"><strong>Your confirmed driver: '+esc(t.confirmedDriver.name)+'</strong><span>'+esc(t.confirmedDriver.vehicle)+' · '+esc(t.confirmedDriver.plate)+'</span><span>Driver phone: '+esc(t.confirmedDriver.phone||'Contact dispatch')+'</span></div>':''}<div class="card-actions">${user.role === 'driver' ? driverButtons(t) : active(t) ? `<button class="btn primary" data-detail="${t.id}">${icon('map')} Track trip</button>${!t.poolParentId?`<button class="btn" data-trip="${t.id}" data-action="cancel">Cancel trip</button>`:''}` : t.status === 'completed' ? t.rating ? `<span class="rating">${'★'.repeat(t.rating)} · Your rating</span>` : `<button class="btn" data-rate="${t.id}">Rate your ride</button>` : ''}</div>`}${rideExplanation(t)}${rideExtras(t)}</article>`;
+function dropOffDetails(t) {
+  return [Number.isFinite(t.completedAt) ? time(t.completedAt) : '', t.confirmedDriver?.name].filter(Boolean).join(' · ');
+}
+function cancellationAudit(t) {
+  return [Number.isFinite(t.cancelledAt) ? time(t.cancelledAt) : '', t.cancelledBy].filter(Boolean).join(' · ');
+}
+function offerSecondsRemaining(expiresAt) {
+  const elapsed = Math.max(0, performance.now() - snapshotReceivedAt);
+  return Math.max(0, Math.ceil((expiresAt - lastSnapshotAt - elapsed) / 1000));
+}
+function tripCard(t, showHistoryDetails = false) {
+  const cancellationDetails = cancellationAudit(t);
+  const driver = state.drivers.find(d => d.id === t.driverId) || (t.status==='completed'?t.confirmedDriver:null), offer = state.offers.find(o => o.tripId === t.id && o.status === 'pending' && o.expiresAt > lastSnapshotAt);
+  return `<article class="panel trip-card ${t.redFlag ? 'flagged-card' : ''}"><div class="trip-card-head">${showHistoryDetails && user.role === 'customer' ? `<button type="button" class="text-btn trip-ref" data-history-ride="${esc(t.id)}" aria-label="Open ride ${esc(t.reference)}">${esc(t.reference)}</button>` : `<strong>${esc(t.reference)}</strong>`}${badge(t.status, t.redFlag)}</div>${showHistoryDetails && user.role === 'customer' && t.status === 'cancelled' && t.cancellationReason ? `<p class="notice"><strong>Cancellation reason:</strong> ${esc(t.cancellationReason)}${cancellationDetails ? ' · ' + esc(cancellationDetails) : ''}</p>` : ''}${showHistoryDetails && user.role === 'customer' && t.status === 'completed' && Number.isFinite(t.completedAt) ? '<p class="notice"><strong>Drop-off:</strong> ' + esc(dropOffDetails(t)) + '</p>' : ''}${pairedRideLabel(t)}<div class="trip-card-time"><strong>${time(t.pickupAt)}</strong><span>${date(t.pickupAt)} · ${t.passengers} passenger${t.passengers > 1 ? 's' : ''}</span></div><div class="journey"><div><span class="journey-dot"></span><small>PICKUP</small><strong>${esc(t.pickup)}</strong></div><div><span class="journey-dot end"></span><small>DESTINATION</small><strong>${esc(t.destination)}</strong></div></div>${t.isSharedRun?'<section class="shared-run-preview notice"><strong>Shared run · '+t.passengers+' passengers · '+(t.collectedStops||0)+' / '+t.sharedStops.length+' pickups collected</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+time(x.plannedAt)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s)'+(i<(t.collectedStops||0)?' · Onboard':i===(t.collectedStops||0)?' · NEXT':'')+'</li>').join('')+'</ol></section>':''}${user.role === 'driver' ? `<div class="trip-customer">${icon('users')} ${esc(t.customerName)}${t.isSharedRun?' · Follow pickup order':' · '+esc(t.customerPhone)}</div>` : driver ? `<div class="trip-customer">${icon('car')} ${esc(driver.name)} · ${esc(driver.vehicle)} · ${esc(driver.plate)}</div>` : '<p class="muted">Dispatch will confirm your driver.</p>'}${offer && user.role === 'driver' ? `<div class="offer-note"><span data-offer-countdown="${offer.expiresAt}">${offerSecondsRemaining(offer.expiresAt)} seconds to respond</span> · ${offer.etaSource==='road'?'Road':'Simulated'} pickup ETA ${offer.eta} min</div><div class="card-actions"><button class="btn primary" data-trip="${t.id}" data-action="accept" data-offer="${offer.id}">Accept trip</button><button class="btn" data-trip="${t.id}" data-action="decline" data-offer="${offer.id}">Decline</button></div>` : `${user.role==='customer'&&t.confirmedDriver&&active(t)?'<div class="confirmed-driver"><strong>Your confirmed driver: '+esc(t.confirmedDriver.name)+'</strong><span>'+esc(t.confirmedDriver.vehicle)+' · '+esc(t.confirmedDriver.plate)+'</span><span>Driver phone: '+esc(t.confirmedDriver.phone||'Contact dispatch')+'</span></div>':''}<div class="card-actions">${user.role === 'driver' ? driverButtons(t) : active(t) ? `<button class="btn primary" data-detail="${t.id}">${icon('map')} Track trip</button>${!t.poolParentId?`<button class="btn" data-trip="${t.id}" data-action="cancel">Cancel trip</button>`:''}` : t.status === 'completed' ? t.rating ? `<span class="rating">${'★'.repeat(t.rating)} · Your rating</span>` : `<button class="btn" data-rate="${t.id}">Rate your ride</button>` : ''}</div>`}${offer&&user.role==='driver'?'':rideExplanation(t)}${rideExtras(t)}</article>`;
 }
 function driverButtons(t) { const next = { accepted: ['depart', 'Head to pickup'], heading_to_pickup: ['arrive', 'I have arrived'], arrived: ['pickup', 'Passenger onboard'], onboard: ['complete', 'Complete trip'] }[t.status]; return next ? `<button class="btn primary" data-trip="${t.id}" data-action="${next[0]}">${icon('check')} ${t.isSharedRun&&next[0]==='pickup'?'Confirm this pickup · '+((t.collectedStops||0)+1)+' / '+t.sharedStops.length:next[1]}</button>${['accepted', 'heading_to_pickup', 'arrived'].includes(t.status)&&!(t.collectedStops>0) ? `<button class="btn danger-text" data-release="${t.id}">Drop trip</button>` : ''}<button class="btn" data-detail="${t.id}">Details</button>` : ''; }
-function driverAvailabilityModal() {
-  const driver = state.drivers.find(item => item.id === user.driverId);
+let scheduleManagementDate = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+function scheduleManagementPage() {
+  const drivers = state.drivers.filter(driver => !driver.demoRunId);
+  const rows = drivers.map(driver => {
+    const shift = driver.availability?.[scheduleManagementDate];
+    const hours = shift?.unavailable ? 'Unavailable' : shift ? lgtcInputTime(shift.start) + '–' + lgtcInputTime(shift.end) + ' ET' : 'No shift entered';
+    return '<tr><td><strong>' + esc(driver.name) + '</strong></td><td>' + esc(driver.vehicle) +
+      ' · ' + driver.seats + ' seats</td><td>' + esc(hours) + '</td><td>' + badge(driver.status) +
+      '</td><td><button type="button" class="btn small" data-edit-shift="' + esc(driver.id) + '">Edit shift</button></td></tr>';
+  }).join('');
+  return heading('FLEET','Schedule Management','Set driver hours before building the route plan.') +
+    '<section class="panel"><label>Service date<input type="date" id="schedule-management-date" value="' +
+    esc(scheduleManagementDate) + '"></label><div class="table-scroll"><table><thead><tr><th>Driver</th><th>Vehicle</th><th>Shift</th><th>Live status</th><th></th></tr></thead><tbody>' +
+    rows + '</tbody></table></div></section>';
+}
+function driverAvailabilityModal(driverId = user.driverId, selectedDate) {
+  const driver = state.drivers.find(item => item.id === driverId);
   const availability = driver.availability || {};
   const today = new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const dates = Object.keys(availability).filter(day => day >= today).sort().slice(0,7);
   const timeValue = minutes => String(Math.floor(minutes/60)).padStart(2,'0') + ':' + String(minutes%60).padStart(2,'0');
-  modal('<h2>My availability</h2><p>Tell dispatch when you can take rides. Times are Eastern. Go online separately when you’re ready for offers.</p>' +
+  modal('<h2>' + (user.role === 'owner' ? esc(driver.name) + ' · Shift' : 'My availability') +
+    '</h2><p>Shift times are Eastern. Live offers also depend on online status.</p>' +
     (dates.length ? '<p><strong>Upcoming availability</strong></p><ul>' + dates.map(day => {
       const shift = availability[day];
       const label = shift.unavailable ? 'Unavailable' : timeValue(shift.start) + '–' + timeValue(shift.end) + ' ET';
       return '<li><button type="button" class="text-btn" data-driver-shift-date="' + day + '">' + day + ' · ' + label + '</button></li>';
     }).join('') + '</ul>' : '') +
-    '<form id="driver-availability-form"><label>Date<input type="date" name="serviceDate" required value="' + today + '"></label>' +
+    '<form id="driver-availability-form"><label>Date<input type="date" name="serviceDate" required value="' + esc(selectedDate || today) + '"></label>' +
     '<label>Availability<select name="selection"><option value="hours">Available during these hours</option>' +
     '<option value="unavailable">Unavailable that day</option><option value="clear">Clear saved availability</option></select></label>' +
     '<div class="form-grid" id="driver-availability-hours"><label>Start (ET)<input type="time" name="start"></label>' +
@@ -899,7 +1574,7 @@ function driverAvailabilityModal() {
       const submit = event.submitter;
       submit.disabled = true;
       try {
-        await api('/api/driver/availability',Object.fromEntries(new FormData(form)));
+        await api('/api/driver/availability',{ ...Object.fromEntries(new FormData(form)), driverId });
         $('#modal').close();
         await refresh();
         toast('Availability saved.');
@@ -907,11 +1582,109 @@ function driverAvailabilityModal() {
     });
   };
 }
+let driverTripPeriod='today', driverTripSearch='', driverDropoffs=false, driverCompleted=false;
+function driverMobileTrips(trips){
+ const zone={timeZone:'America/New_York'};
+ const day=value=>new Date(value).toLocaleDateString('en-CA',zone);
+ const today=day(lastSnapshotAt||Date.now());
+ const visible=trips.filter(t=>(driverTripPeriod==='future'?day(t.pickupAt)>today:day(t.pickupAt)<=today)
+  && (!driverDropoffs||t.status==='onboard') && (driverCompleted||t.status!=='completed')
+  && [t.reference,t.customerName,t.pickup,t.destination].some(value=>String(value||'').toLowerCase().includes(driverTripSearch.toLowerCase())));
+ return `<section class="driver-mobile-trips"><h2>Trips</h2>
+ <div class="driver-period">${['today','future'].map(p=>`<button data-driver-period="${p}" aria-pressed="${driverTripPeriod===p}">${p==='today'?'Today':'Future'}</button>`).join('')}</div>
+ <input id="driver-trip-search" type="search" placeholder="Search trips" aria-label="Search trips" value="${esc(driverTripSearch)}">
+ <div class="driver-filters"><label><input id="driver-dropoffs" type="checkbox" ${driverDropoffs?'checked':''}> Pending drop-off</label><button id="driver-completed" aria-pressed="${driverCompleted}">${driverCompleted?'Hide completed':'Show completed'}</button></div>
+ <p class="driver-swipe-hint">Swipe either way or tap Ride actions.</p>
+ <div id="driver-mobile-list">${visible.map(t=>{
+ const offer=state.offers.find(o=>o.tripId===t.id&&o.status==='pending');
+ const stop=(kind,label,address,at)=>`<div class="driver-stop ${kind}"><span><strong>${label}</strong><small>${at?new Date(at).toLocaleTimeString([], {...zone,hour:'numeric',minute:'2-digit'}):'Time pending'}</small></span><div><strong>${esc(t.customerName)}</strong><small>${esc(t.lgtc?.reference||t.reference)}</small><div>${esc(address)}</div></div></div>`;
+ return `<article class="driver-route" data-driver-route="${esc(t.id)}"><div class="driver-route-head"><strong>${new Date(t.pickupAt).toLocaleDateString([], {...zone,month:'short',day:'numeric'})}</strong> ${badge(t.status)}<button data-driver-ride-actions aria-expanded="false">Ride actions</button></div>${stop('pickup','PU',t.pickup,t.pickupAt)}${stop('dropoff','DO',t.destination,t.completedAt||t.plannedEndAt)}<div class="card-actions driver-route-actions" hidden>${offer?`<button class="btn primary" data-trip="${t.id}" data-action="accept" data-offer="${offer.id}">Accept trip</button><button class="btn" data-trip="${t.id}" data-action="decline" data-offer="${offer.id}">Decline</button>`:driverButtons(t)}${!offer?`<button class="btn" data-detail="${t.id}">View ride</button>`:''}</div></article>`;
+ }).join('')||'<p>No trips match these filters.</p>'}</div></section>`;
+}
+function bindDriverMobileTrips(){
+ const screen=document.querySelector('.driver-mobile-trips');
+ if(!screen)return;
+ screen.querySelectorAll('[data-driver-period]').forEach(button=>button.onclick=()=>{driverTripPeriod=button.dataset.driverPeriod;render();});
+ $('#driver-completed').onclick=()=>{driverCompleted=!driverCompleted;if(driverCompleted)driverDropoffs=false;render();};
+ $('#driver-dropoffs').onchange=event=>{driverDropoffs=event.target.checked;render();};
+ $('#driver-trip-search').onchange=event=>{driverTripSearch=event.target.value;render();};
+ for(const card of screen.querySelectorAll('[data-driver-route]')){
+  const button=card.querySelector('[data-driver-ride-actions]');
+  const actions=card.querySelector('.driver-route-actions');
+  const id=card.dataset.driverRoute;
+  const show=open=>{
+    actions.hidden=!open;
+    button.setAttribute('aria-expanded',String(open));
+    if(open)expandedDriverRides.add(id);
+    else expandedDriverRides.delete(id);
+  };
+  show(expandedDriverRides.has(id));
+  button.onclick=()=>show(actions.hidden);
+  let start;
+  card.addEventListener('pointerdown',e=>{if(e.isPrimary&&e.button===0&&!e.target.closest('button'))start=[e.pointerId,e.clientX,e.clientY];});
+  card.addEventListener('pointercancel',()=>{start=null;});
+  card.addEventListener('pointerup',e=>{
+   if(!start||start[0]!==e.pointerId)return;
+   const dx=e.clientX-start[1],dy=e.clientY-start[2];
+   start=null;
+   if(Math.abs(dx)>=48&&Math.abs(dx)>Math.abs(dy)*1.5)show(true);
+  });
+ }
+}
+async function openDriverDocuments(id){
+  const path='/api/driver-documents?driver='+encodeURIComponent(id);
+  const {documents}=await api(path);
+  const driver=state.drivers.find(d=>d.id===id);
+  modal('<h2>Documents · '+esc(driver?.name||user.name)+'</h2>'+
+    ['license','contract'].map(kind=>{
+      const doc=documents[kind];
+      return '<section class="panel"><h3>'+(kind==='license'?'Driver license':'Contract')+'</h3><p>'+esc(doc?.status||'Missing')+'</p>'+
+        (doc?.expiresOn?'<p>License expires '+esc(doc.expiresOn)+'</p>':'')+(doc?.reason?'<p>'+esc(doc.reason)+'</p>':'')+
+        (doc?'<a download="driver-'+kind+(doc.file.startsWith('data:application/pdf')?'.pdf':doc.file.startsWith('data:image/png')?'.png':doc.file.startsWith('data:image/webp')?'.webp':'.jpg')+'" href="'+esc(doc.file)+'">Download '+kind+'</a>':'')+
+        '<form data-document="'+kind+'"><label>Upload '+kind+'<input type="file" required accept="image/jpeg,image/png,image/webp'+(kind==='contract'?',application/pdf':'')+'"></label>'+(kind==='license'?'<label>License expiration date<input type="date" name="expiresOn" required></label>':'')+'<button class="btn">Submit '+kind+'</button></form>'+
+        (doc&&user.role==='owner'?'<form data-review-document="'+kind+'"><label>Correction reason<input maxlength="500"></label><button class="btn" value="approve">Approve '+kind+'</button><button class="btn" value="correct">Request correction</button></form>':'')+'</section>';
+    }).join(''));
+  for(const form of document.querySelectorAll('[data-document],[data-review-document]'))form.onsubmit=event=>{
+    event.preventDefault();
+    run(async()=>{
+      const button=event.submitter;
+      button.disabled=true;
+      try{
+        const input=form.querySelector('input');
+        const kind=form.dataset.document||form.dataset.reviewDocument;
+        const data={kind,action:button.value||'upload'};
+        if(data.action==='upload'){
+          if(input.files[0].size>2000000)throw Error('Files must be 2 MB or smaller.');
+          if(kind==='license')data.expiresOn=form.elements.expiresOn.value;
+          data.file=await new Promise((resolve,reject)=>{
+            const reader=new FileReader();
+            reader.onload=()=>resolve(reader.result);
+            reader.onerror=()=>reject(Error('Could not read the file.'));
+            reader.readAsDataURL(input.files[0]);
+          });
+        }else data.reason=input.value;
+        await api(path,data);
+        $('#modal').close();
+        await openDriverDocuments(id);
+      }finally{button.disabled=false;}
+    });
+  };
+}
+function driverVehiclePage(){
+  const driver=state.drivers.find(item=>item.id===user.driverId);
+  return heading('DRIVER WORKSPACE','Vehicle','Your assigned vehicle and location sharing.')+
+    '<section class="panel trip-card"><h2>'+esc(driver.vehicle||'Vehicle pending')+'</h2><p>'+
+    esc(driver.plate||'Plate pending')+' · '+esc(driver.seats)+' passenger seats</p>'+
+    (driver.capabilities?.includes('wheelchair')?'<p>Wheelchair accessible</p>':'')+'</section>'+
+    '<button class="btn" data-driver-documents="'+esc(driver.id)+'">Profile &amp; documents</button>'+phoneTrackingPanel(driver);
+}
 function driverPage() {
   const d = state.drivers.find(d => d.id === user.driverId), trips = state.trips.filter(t=>active(t)&&(t.driverId===user.driverId||state.offers.some(o=>o.tripId===t.id&&o.status==='pending')));
-  return heading('DRIVER WORKSPACE', `Let’s get moving, ${esc(user.name.split(' ')[0])}.`, 'Accept an offer, follow your pickup, and keep dispatch updated.', `<button class="btn ${d.status === 'online' ? 'primary' : ''}" id="toggle-status" ${d.status === 'busy' ? 'disabled' : ''}>${icon('bolt')} ${d.status === 'offline' ? 'Go online' : d.status === 'busy' ? 'On a trip' : 'Online · go offline'}</button>`) + '<p><button type="button" class="btn" id="driver-availability">My availability</button></p><section class="mobile-status panel"><span class="status-orb '+d.status+'">'+icon('car')+'</span><div><strong>'+(d.status==='busy'?'You have an active ride':d.status==='online'?'You’re available':'You’re offline')+'</strong><p>'+(d.status==='busy'?'Follow the next step on your ride card.':d.status==='online'?'Eligible pickup offers appear here automatically.':'Go online when you’re ready for pickups.')+'</p></div></section>' + (d.status==='busy'?`<section class="panel last-ride"><strong>${d.finishThenOffline?'You will go offline after this ride.':'Keep receiving rides after this trip?'}</strong><button class="btn" id="last-ride">${d.finishThenOffline?'Keep accepting rides':'Go offline after this ride'}</button></section>`:'') + `${phoneTrackingPanel(d)}<div class="trip-card-grid">${trips.length ? trips.map(tripCard).join('') : `<section class="panel empty">${icon('car')}<h2>${d.status === 'offline' ? 'You’re offline.' : 'Ready for the next trip.'}</h2><p>${d.status === 'offline' ? 'Go online to receive offers.' : 'New offers will appear here automatically.'}</p></section>`}</div>`;
+  return driverMobileTrips(state.trips.filter(t=>t.driverId===user.driverId||trips.includes(t))) + heading('DRIVER WORKSPACE', `Let’s get moving, ${esc(user.name.split(' ')[0])}.`, 'Accept an offer, follow your pickup, and keep dispatch updated.', `<button class="btn ${d.status === 'online' ? 'primary' : ''}" id="toggle-status" ${d.status === 'busy' ? 'disabled' : ''}>${icon('bolt')} ${d.status === 'offline' ? 'Go online' : d.status === 'busy' ? 'On a trip' : 'Online · go offline'}</button>`) + '<p><button type="button" class="btn" id="driver-availability">My availability</button></p><section class="mobile-status panel"><span class="status-orb '+d.status+'">'+icon('car')+'</span><div><strong>'+(d.status==='busy'?'You have an active ride':d.status==='online'?'You’re available':'You’re offline')+'</strong><p>'+(d.status==='busy'?'Follow the next step on your ride card.':d.status==='online'?'Eligible pickup offers appear here automatically.':'Go online when you’re ready for pickups.')+'</p></div></section>' + (d.status==='busy'?`<section class="panel last-ride"><strong>${d.finishThenOffline?'You will go offline after this ride.':'Keep receiving rides after this trip?'}</strong><button class="btn" id="last-ride">${d.finishThenOffline?'Keep accepting rides':'Go offline after this ride'}</button></section>`:'') + `<div class="trip-card-grid driver-desktop-trips">${trips.length ? trips.map(trip => tripCard(trip)).join('') : `<section class="panel empty">${icon('car')}<h2>${d.status === 'offline' ? 'You’re offline.' : 'Ready for the next trip.'}</h2><p>${d.status === 'offline' ? 'Go online to receive offers.' : 'New offers will appear here automatically.'}</p></section>`}</div>`;
 }
 var selectedCustomerTrip=null;
+let customerHistoryReturn = null;
+let highlightedHistoryRide = null;
 function customerTracking(t,d,j){
  const from=config.places.find(p=>p.name===t.pickup),to=config.places.find(p=>p.name===t.destination);if(!from||!to)return '<div class="rider-map-unavailable">Pickup map is unavailable. Your addresses are shown below.</div>';
  const points=[from,to,...(j.location==='available'?[d]:[])],latMin=Math.min(...points.map(p=>p.lat)),latMax=Math.max(...points.map(p=>p.lat)),lngMin=Math.min(...points.map(p=>p.lng)),lngMax=Math.max(...points.map(p=>p.lng));
@@ -924,50 +1697,274 @@ function customerPage(){
  const viewed=state.trips.find(t=>t.id===selectedCustomerTrip);
  if(viewed&&!active(viewed)){
   const complete=viewed.status==='completed';
-  return heading('YOUR JOURNEY',complete?'Ride completed':'Ride cancelled',complete?'Your driver marked the drop-off complete.':'This booking is closed.')+
+  return heading('YOUR JOURNEY',complete?'Ride completed':'Ride cancelled',complete?(dropOffDetails(viewed) ? 'Drop-off: '+esc(dropOffDetails(viewed)) : 'Your driver marked the drop-off complete.'):viewed.cancellationReason ? 'Cancellation reason: '+esc(viewed.cancellationReason)+(cancellationAudit(viewed) ? ' · '+esc(cancellationAudit(viewed)) : '') : 'This booking is closed.')+
    '<div class="trip-card-grid">'+tripCard(viewed)+'</div><div class="card-actions">'+
    (trips.length?'<button class="btn primary" id="next-customer-ride">View upcoming ride</button>':'<button class="btn primary" id="book-trip">Plan a trip</button>')+
-   '<button class="btn" data-go="history">Trip history</button></div>';
+   '<button class="btn" id="back-to-trip-history">Back to Trip history</button></div>';
  }
  const t=viewed||trips[0];
  if(!t)return '<section class="rider-welcome"><span class="eyebrow">PROLIFT RIDES</span><h1>Your next journey starts here.</h1><p>Book a pickup and follow every step in one place.</p><button class="btn primary" id="book-trip">Plan a trip</button>'+(state.trips.length?' <button class="btn" data-go="history">Trip history</button>':'')+'</section>';
  selectedCustomerTrip=t.id;
- const d=state.drivers.find(d=>d.id===t.driverId),j=ProLiftRider.journey(t,d),identity=t.confirmedDriver;
+ const d=state.drivers.find(d=>d.id===t.driverId),j=ProLiftRider.journey(t,d,lastSnapshotAt||Date.now()),identity=t.confirmedDriver;
  return '<section class="rider-journey"><header class="rider-header"><div><span class="eyebrow">YOUR JOURNEY</span><h1>'+esc(j.title)+'</h1><p>'+esc(j.description)+'</p></div></header>'+
- (trips.length>1?'<label class="rider-switch">Viewing ride<select id="customer-ride-choice">'+trips.map(x=>'<option value="'+x.id+'" '+(x.id===t.id?'selected':'')+'>'+esc(x.pickup)+' → '+esc(x.destination)+' · '+date(x.pickupAt)+'</option>').join('')+'</select></label>':'')+
+ (trips.length>1?'<label class="rider-switch">Viewing ride<select id="customer-ride-choice">'+trips.map(x=>'<option value="'+x.id+'" '+(x.id===t.id?'selected':'')+'>'+esc(x.pickup)+' → '+esc(x.destination)+' · '+date(x.pickupAt)+' '+time(x.pickupAt)+'</option>').join('')+'</select></label>':'')+
  (j.late?'<div class="rider-warning"><strong>Your pickup time has passed</strong><span>Please check with your driver or send a help request. The app has no verified new arrival time.</span></div>':'')+
  '<div class="rider-layout">'+customerTracking(t,d,j)+'<section class="rider-sheet"><div class="rider-time"><span>Pickup '+date(t.pickupAt)+'</span><strong>'+time(t.pickupAt)+'</strong><span>'+esc(t.reference)+'</span></div>'+pairedRideLabel(t)+'<div class="rider-stops"><div><i></i><span>MEET HERE<strong>'+esc(t.pickup)+'</strong></span></div><div><i></i><span>GOING TO<strong>'+esc(t.destination)+'</strong></span></div></div><ol class="rider-steps">'+['Booked','Driver confirmed','At pickup','On your way'].map((label,i)=>'<li class="'+(i<=j.step?'reached':'')+'" '+(i===j.step?'aria-current="step"':'')+'><i>'+ (i<j.step?'✓':i+1)+'</i><span>'+label+'</span></li>').join('')+'</ol>'+
  (identity?'<div class="rider-identity"><span class="avatar large">'+esc(identity.name.split(' ').map(x=>x[0]).join('').slice(0,2))+'</span><div><strong>'+esc(identity.name)+'</strong><span>'+esc(identity.vehicle)+'</span><b>'+esc(identity.plate)+'</b></div></div>':'<div class="rider-unassigned">Driver and car details will appear here after acceptance.</div>')+
- rideExplanation(t)+'<div class="rider-main-action">'+(identity?.phone?'<a class="btn primary" href="tel:'+esc(identity.phone)+'">'+icon('users')+' Call driver</a>':'<button class="btn primary" data-help-trip="'+t.id+'">Ask about my pickup</button>')+'</div><div class="rider-secondary"><button class="text-btn" data-help-trip="'+t.id+'">Get help</button><button class="text-btn" data-go="messages">Ride updates</button>'+(t.status!=='onboard'?'<button class="text-btn" data-trip="'+t.id+'" data-action="cancel">Cancel ride</button>':'')+'</div></section></div><button class="btn rider-book" id="book-trip">'+icon('plus')+' Book another ride</button></section>';
+ '<div class="rider-main-action">'+(identity?.phone?'<a class="btn primary" href="tel:'+esc(identity.phone)+'">'+icon('users')+' Call driver</a>':'<button class="btn primary" data-help-trip="'+t.id+'">Ask about my pickup</button>')+'</div><div class="rider-secondary">'+(identity?.phone?'<button class="text-btn" data-help-trip="'+t.id+'">Get help</button>':'')+(t.status!=='onboard'?'<button class="text-btn" data-trip="'+t.id+'" data-action="cancel">Cancel ride</button>':'')+'</div></section></div><button class="btn rider-book" id="book-trip">'+icon('plus')+' Book another ride</button></section>';
 }
-function historyPage() { const trips = state.trips.filter(t => !active(t)); return heading('TRIP RECORDS', 'Your journey history.', 'Completed and cancelled trips, with the details that matter.') + `<div class="trip-card-grid">${trips.length ? trips.map(tripCard).join('') : '<section class="panel empty"><h2>No past trips yet.</h2><p>Completed and cancelled trips appear here.</p></section>'}</div>`; }
+function historyPage() { const trips = state.trips.filter(t => !active(t)); return heading('TRIP RECORDS', 'Trip history', 'Completed and cancelled rides.') + `<div class="trip-card-grid">${trips.length ? trips.map(trip => tripCard(trip, true) + (user.role === 'driver' ? '<button class="btn history-ride-details" data-detail="'+esc(trip.id)+'">View ride details</button>' : '')).join('') : '<section class="panel empty"><h2>No past trips yet.</h2><p>Completed and cancelled trips appear here.</p></section>'}</div>`; }
 function render() {
   if (!user || !state) return;
-  const pages = {manage:managePage,"lgtc-settings":lgtcSettingsPage,customers:regularCustomersPage,readiness:readinessPage,scheduled:scheduledPage,help:helpPage, overview, reports:reportsPage, messages:messagesPage, settings:settingsPage, schedule: schedulePageView, trips: tripsPage, fleet: fleetPage, imports: importsPage, drivers: driversPage, activity: activityPage, work: driverPage, mytrips: customerPage, history: historyPage };
-  shell((pages[tab] || overview)());
+  const pages = {shifts:scheduleManagementPage,manage:managePage,"lgtc-settings":lgtcSettingsPage,customers:regularCustomersPage,readiness:readinessPage,scheduled:scheduledPage,help:()=>helpPage(user.role==='owner'?'Support requests':'Help requests'), overview, reports:reportsPage, messages:messagesPage, settings:settingsPage,"fleet-import":fleetImportPage, schedule: schedulePageView, trips: tripsPage, fleet: fleetPage, imports: importsPage, "trip-sources": importsPage, drivers: driversPage, activity: activityPage, work: driverPage, vehicle:driverVehiclePage, "driver-messages":()=>helpPage("Messages"), mytrips: customerPage, history: historyPage };
+  const workspaceView = new URLSearchParams(location.search).get('workspacePanel');
+  const allowed = user.role === 'owner'
+    ? Object.keys(pages).filter(key=>!['work','vehicle','driver-messages','scheduled','mytrips','history'].includes(key))
+    : user.role === 'driver' ? ['work','vehicle','driver-messages','scheduled','history'] : ['mytrips','help','messages','history'];
+  if (allowed.includes(workspaceView)) tab = workspaceView;
+  document.body.classList.remove('workspace-panel-window');
+  const rosterSearch = tab === 'drivers' ? $('#fleet-roster-search')?.value : null;
+  const openRoster = tab === 'drivers' ? new Set([...document.querySelectorAll('[data-live-roster-id][open]')].map(row=>row.dataset.liveRosterId)) : null;
+  shell((pages[tab] || overview)()+(tab==='settings'?appearanceControl():''));
+  if (openRoster) {
+    document.querySelectorAll('[data-live-roster-id]').forEach(row=>row.open=openRoster.has(row.dataset.liveRosterId));
+    const searchRoster = $('#fleet-roster-search');
+    if (searchRoster && rosterSearch) {
+      searchRoster.value = rosterSearch;
+      searchRoster.dispatchEvent(new Event('input'));
+    }
+  }
+  if (tab !== 'overview') bindWorkspacePanels(workspaceView === tab);
+  bindMissedPickupDemo();
+  if ($('#start-mongo-dispatch')) $('#start-mongo-dispatch').onclick=event=>run(async()=>{
+    if (mongoDispatchStarting) return;
+    mongoDispatchStarting=true;
+    event.currentTarget.disabled=true;
+    try {
+      const response=await fetch('/owner/dispatch-plan?view=dashboard',{method:'POST'});
+      if (!response.ok) throw Error(await response.text());
+      await refresh();
+    } finally {
+      mongoDispatchStarting=false;
+      if ($('#start-mongo-dispatch')) $('#start-mongo-dispatch').disabled=!!state.lgtcReplay?.running;
+    }
+  });
+  if($('#start-live-284'))$('#start-live-284').onclick=event=>run(async()=>{
+    const button=event.currentTarget;
+    button.disabled=true;
+    try{
+      const response=await fetch('/owner/run-284',{method:'POST'});
+      if(!response.ok)throw Error(await response.text());
+      await refresh();
+    }finally{button.disabled=false;}
+  });
   updateConnection();
 }
-function modal(content) { const el = $('#modal'); el.innerHTML = `<div class="modal-top"><span class="eyebrow">PROLIFT</span><button class="icon-btn" id="close-modal" aria-label="Close dialog">×</button></div>${content}`; el.showModal(); $('#close-modal').onclick = () => { el.close(); render(); }; el.oncancel = () => setTimeout(() => { if (!el.open) render(); }); }
+function bindWorkspacePanels(detached) {
+  const page = $('#main-content > .page-content');
+  if (!page) return;
+  const regions = [...page.querySelectorAll(':scope > section, :scope > article, :scope > div > section')]
+    .filter(panel=>panel.querySelector('h2,h3'));
+  if (!regions.length) {
+    const body = document.createElement('section');
+    body.append(...page.childNodes);
+    page.append(body);
+    regions.push(body);
+  }
+  const candidates = regions;
+  const url = new URL(location.href);
+  const picked = url.searchParams.get('section');
+  const occurrences = new Map();
+  if (detached) document.body.classList.add('workspace-panel-window');
+  else document.body.classList.remove('workspace-panel-window');
+  for (const panel of candidates) {
+    const heading = panel.querySelector('h2,h3') || page.querySelector('h1');
+    const title = heading?.textContent.trim() || panel.querySelector('h1')?.textContent.trim() || 'Workspace';
+    const label = (panel.id || [...panel.classList].join('.') || 'page').replaceAll(' ','-');
+    const occurrence = (occurrences.get(label) || 0) + 1;
+    occurrences.set(label,occurrence);
+    const id = label+'-'+occurrence;
+    const key = 'royalcab.workspace-panel.'+user.role+'.'+tab+'.'+id;
+    let preferences = {};
+    try { preferences = JSON.parse(localStorage.getItem(key) || '{}'); } catch {}
+    const tools = document.createElement('div');
+    tools.className = 'workspace-panel-controls';
+    tools.setAttribute('role','group');
+    tools.setAttribute('aria-label',title+' panel controls');
+    const content = document.createElement('div');
+    content.className = 'workspace-panel-content';
+    panel.before(tools);
+    panel.before(content);
+    content.append(panel);
+    const frame = document.createElement('div');
+    frame.className = 'workspace-adjustable-panel';
+    tools.before(frame);
+    frame.append(tools,content);
+    if (detached && picked === id) {
+      if (!panel.matches('#main-content > .page-content')) {
+        page.dataset.detachedSection = 'true';
+        frame.dataset.detachedTarget = 'true';
+      }
+    }
+    if (!detached) {
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'fleet-panel-resize';
+      handle.setAttribute('aria-label','Resize '+title+' vertically');
+      const resize = value => {
+        preferences.height = Math.round(Math.max(90,Math.min(1200,value)));
+        content.style.minHeight = preferences.height+'px';
+      };
+      handle.onpointerdown = event => {
+        if (event.button !== 0) return;
+        const start = event.clientY, height = content.getBoundingClientRect().height;
+        handle.setPointerCapture(event.pointerId);
+        handle.onpointermove = move => resize(height+move.clientY-start);
+        handle.onlostpointercapture = () => { handle.onpointermove=null; save(); };
+      };
+      handle.onkeydown = event => {
+        if (!['ArrowUp','ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        resize(content.getBoundingClientRect().height+(event.key==='ArrowDown'?40:-40));
+        save();
+      };
+      frame.append(handle);
+      if (Number.isFinite(preferences.height)) resize(preferences.height);
+    }
+    function add(label, action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn small';
+      button.textContent = label;
+      button.onclick = action;
+      tools.append(button);
+      return button;
+    }
+    function apply() {
+      content.hidden = !detached && Boolean(preferences.hidden);
+      frame.classList.toggle('workspace-panel-expanded',!detached && Boolean(preferences.expanded));
+      if (toggle) {
+        toggle.textContent = preferences.hidden ? 'Show' : 'Hide';
+        toggle.setAttribute('aria-expanded',String(!content.hidden));
+        size.textContent = preferences.expanded ? 'Restore' : 'Expand';
+        size.setAttribute('aria-pressed',String(Boolean(preferences.expanded)));
+      }
+    }
+    function save() {
+      try { localStorage.setItem(key,JSON.stringify(preferences)); } catch {}
+      apply();
+    }
+    const toggle = detached ? null : add('Hide',()=>{preferences.hidden=!preferences.hidden; save();});
+    const size = detached ? null : add('Expand',()=>{preferences.expanded=!preferences.expanded; preferences.hidden=false; save();});
+    add(detached?'Pop in':'Pop out',()=>{
+      if (detached) {
+        if (window.opener && !window.opener.closed) { window.opener.focus(); window.close(); return; }
+        url.searchParams.delete('workspacePanel');
+        url.searchParams.delete('section');
+        location.assign(url);
+        return;
+      }
+      url.searchParams.set('workspacePanel',tab);
+      url.searchParams.set('section',id);
+      if (!window.open(url,'royalcab-'+tab+'-'+id,'popup,width=960,height=760')) toast('Allow pop-ups for RoyalCab to open this panel.',true);
+    });
+    {
+      const summary = document.createElement('span');
+      summary.textContent = title;
+      tools.prepend(summary);
+    }
+    apply();
+  }
+  if (detached && page.dataset.detachedSection) {
+    const target = page.querySelector('[data-detached-target]');
+    if (target) page.append(target);
+  }
+}
+function accentFirstPopupCard(dialog) {
+  dialog.querySelector('.ride-explanation, .fleet-inspector, .notice, .quick-nearest, .candidate-row, .fleet-record-card, .panel, .trip-card')
+    ?.classList.add('popup-feature-card');
+}
+function modal(content, {compact=false} = {}) { const el = $('#modal'); el.innerHTML = `<div class="modal-top"><span class="eyebrow">PROLIFT</span><button class="icon-btn" id="close-modal" aria-label="Close dialog">×</button></div>${content}`; accentFirstPopupCard(el); el.classList.remove('workspace-dialog-expanded','workspace-dialog-hidden','workspace-dialog-floating'); el.style.removeProperty('--dialog-height'); el.classList.toggle('vehicle-details-dialog',compact); if (!el.open) el.showModal(); else if (!el.matches(':modal')) { el.close(); el.showModal(); } if (!compact) bindDialogLayout(el); $('#close-modal').onclick = () => { el.close(); render(); }; el.oncancel = () => setTimeout(() => { if (!el.open) render(); }); }
+function bindDialogLayout(dialog) {
+  const header = dialog.querySelector('.modal-top');
+  const controls = document.createElement('div');
+  controls.className = 'workspace-panel-controls';
+  for (const [label, reverse, className] of [
+    ['Hide','Show','workspace-dialog-hidden'],
+    ['Expand','Restore','workspace-dialog-expanded']
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn small';
+    button.textContent = label;
+    button.onclick = () => {
+      const changed = dialog.classList.toggle(className);
+      button.textContent = changed ? reverse : label;
+    };
+    controls.append(button);
+  }
+  const float = document.createElement('button');
+  float.type = 'button';
+  float.className = 'btn small';
+  float.textContent = 'Float';
+  float.onclick = () => {
+    const floating = dialog.classList.toggle('workspace-dialog-floating');
+    dialog.close();
+    if (floating) dialog.show(); else dialog.showModal();
+    float.textContent = floating ? 'Dock' : 'Float';
+    if (!floating) dialog.style.removeProperty('--dialog-height');
+  };
+  controls.append(float);
+  const handle = document.createElement('button');
+  handle.type = 'button';
+  handle.className = 'dialog-resize';
+  handle.setAttribute('aria-label','Resize dialog vertically');
+  const resize = height => dialog.style.setProperty('--dialog-height',Math.max(120,Math.min(innerHeight*.88,height))+'px');
+  handle.onpointerdown = event => {
+    if (event.button !== 0) return;
+    const start = event.clientY, height = dialog.getBoundingClientRect().height;
+    handle.setPointerCapture(event.pointerId);
+    handle.onpointermove = move => resize(height+move.clientY-start);
+    handle.onlostpointercapture = () => { handle.onpointermove=null; };
+  };
+  handle.onkeydown = event => {
+    if (!['ArrowUp','ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    resize(dialog.getBoundingClientRect().height+(event.key==='ArrowDown'?40:-40));
+  };
+  header.prepend(controls);
+  dialog.append(handle);
+}
 function tripDetail(id) {
   const t = state.trips.find(t => t.id === id), driver = state.drivers.find(d => d.id === t.driverId);
-  modal(`<h2>${esc(t.reference)}</h2><p>${esc(t.customerName)} · ${date(t.pickupAt)} at ${time(t.pickupAt)}</p>${badge(t.status, t.redFlag)}${pairedRideLabel(t)}${rideExplanation(t)}<div class="detail-route">${esc(t.pickup)} ${icon('arrow')} ${esc(t.destination)}</div>${t.isSharedRun?'<section class="notice"><strong>Shared pickup order · '+t.passengers+' passengers total</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+esc(x.reference)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s) · '+(i<(t.collectedStops||0)?'Onboard':i===(t.collectedStops||0)?'Next pickup':'Waiting')+'</li>').join('')+'</ol></section>':''}${tripFacts(t,driver)}${mapView(driver ? [driver] : [], t)}<p>${driver ? `<strong>${esc(driver.name)}</strong> · ${esc(driver.vehicle)} · ${esc(driver.plate)}<br><small>Location updated ${time(driver.lastLocationAt)} · ${driver.locationSource==='device'?'Phone GPS':'Simulated GPS'}</small>` : 'No driver assigned yet.'}</p>${t.dispatchError ? `<p class="validation-error">${esc(t.dispatchError)}</p>` : ''}<h3>Trip timeline</h3><div class="timeline">${state.events.filter(e => e.tripId === t.id).slice(0, 10).map(e => `<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><small>${time(e.at)} · ${esc(e.actor)} · ${esc(e.detail)}</small></div>`).join('') || '<p class="muted">Awaiting first update.</p>'}</div>${user.role === 'owner' && active(t) && t.status !== 'onboard' && !t.poolParentId && !(t.collectedStops>0) ? `<button class="btn danger-text" id="detail-cancel">Cancel trip</button>` : ''}`);
+  modal(`<h2>${esc(t.reference)}</h2><p>${esc(t.customerName)} · ${date(t.pickupAt)} at ${time(t.pickupAt)}</p>${badge(t.status, t.redFlag)}${pairedRideLabel(t)}${rideExplanation(t)}<div class="detail-route">${esc(t.pickup)} ${icon('arrow')} ${esc(t.destination)}</div>${t.isSharedRun?'<section class="notice"><strong>Shared pickup order · '+t.passengers+' passengers total</strong><ol>'+t.sharedStops.map((x,i)=>'<li>'+esc(x.reference)+' · '+esc(x.pickup)+' · '+x.passengers+' passenger(s) · '+(i<(t.collectedStops||0)?'Onboard':i===(t.collectedStops||0)?'Next pickup':'Waiting')+'</li>').join('')+'</ol></section>':''}${tripFacts(t,driver)}<p>${driver ? `<strong>${esc(driver.name)}</strong> · ${esc(driver.vehicle)} · ${esc(driver.plate)}<br><small>Location updated ${time(driver.lastLocationAt)} · ${driver.locationSource==='device'?'Phone GPS':'Simulated GPS'}</small>` : 'No driver assigned yet.'}</p>${t.dispatchError ? `<p class="validation-error">${esc(t.dispatchError)}</p>` : ''}<h3>Trip timeline</h3><div class="timeline">${state.events.filter(e => e.tripId === t.id).slice(0, 10).map(e => `<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><small>${time(e.at)} · ${esc(e.actor)} · ${esc(e.detail)}</small></div>`).join('') || '<p class="muted">Awaiting first update.</p>'}</div>${user.role === 'owner' && t.demoRunId !== 'mongo-lgtc-replay' && active(t) && t.status !== 'onboard' && !t.poolParentId && !(t.collectedStops>0) ? `<button class="btn danger-text" id="detail-cancel">Cancel trip</button>` : ''}`);
   $('#modal h2').dataset.tripDetailId = id;
+  if (t.demoRunId === 'mongo-lgtc-replay') return;
+  const actions = document.createElement('div');
+  actions.className = 'trip-detail-actions';
+  actions.setAttribute('role','group');
+  actions.setAttribute('aria-label','Ride actions');
   if (user.role === 'owner' && tab !== 'overview' && canShowInDispatch(t)) {
     const button = document.createElement('button');
     button.className = 'btn primary'; button.textContent = 'Show in Dispatch';
-    button.onclick = () => focusDispatchRide(t.id); $('#modal').append(button);
+    button.onclick = () => focusDispatchRide(t.id); actions.append(button);
   }
-  if(user.role==='owner'&&t.poolParentId){const b=document.createElement('button');b.className='btn primary';b.textContent='Open shared car run';b.onclick=()=>tripDetail(t.poolParentId);$('#modal').append(b);}
-  if(user.role==='owner'&&t.isSharedRun&&!t.driverId){const b=document.createElement('button');b.className='btn';b.textContent='Split back into separate bookings';b.onclick=()=>run(()=>sendAction(t.id,'unpool'));$('#modal').append(b);}
-  if(user.role==='owner'){const button=document.createElement('button');button.className='btn';button.textContent='Review driver selection';button.onclick=()=>reviewDispatch(id);$('#modal').append(button);}
-  if(user.role==='owner'&&['awaiting_driver','needs_reassignment','offered'].includes(t.status)){const b=document.createElement('button');b.className='btn primary';b.textContent='Choose driver';b.onclick=()=>run(()=>chooseDriver(id));$('#modal').append(b);}
-  if(user.role==='owner'&&canReplaceConfirmed(t)){const b=document.createElement('button');b.className='btn danger-text';b.textContent='Replace driver';b.onclick=()=>replaceConfirmed(t.id);$('#modal').append(b);}
-  if(user.role==='owner'&&!t.isSharedRun){const b=document.createElement('button');b.className='btn';b.textContent=t.preferredDriver?'Regular driver: '+t.preferredDriver.name:'Set regular driver';b.onclick=()=>regularDriverModal(t.id);$('#modal').append(b);}
-  if ($('#detail-cancel')) $('#detail-cancel').onclick = () => confirmAction(t.id, 'cancel');
+  if(user.role==='owner'&&t.poolParentId){const b=document.createElement('button');b.className='btn primary';b.textContent='Open shared car run';b.onclick=()=>tripDetail(t.poolParentId);actions.append(b);}
+  if(user.role==='owner'&&t.isSharedRun&&!t.driverId){const b=document.createElement('button');b.className='btn';b.textContent='Split back into separate bookings';b.onclick=()=>run(()=>sendAction(t.id,'unpool'));actions.append(b);}
+  if(user.role==='owner'){const button=document.createElement('button');button.className='btn';button.textContent='Review driver selection';button.onclick=()=>reviewDispatch(id);actions.append(button);}
+  if(user.role==='owner'&&['awaiting_driver','needs_reassignment','offered'].includes(t.status)){const b=document.createElement('button');b.className='btn primary';b.textContent='Choose driver';b.onclick=()=>run(()=>chooseDriver(id));actions.append(b);}
+  if(user.role==='owner'&&canReplaceConfirmed(t)){const b=document.createElement('button');b.className='btn danger-text';b.textContent='Replace driver';b.onclick=()=>replaceConfirmed(t.id);actions.append(b);}
+  if(user.role==='owner'&&!t.isSharedRun){const b=document.createElement('button');b.className='btn';b.textContent=t.preferredDriver?'Regular driver: '+t.preferredDriver.name:'Set regular driver';b.onclick=()=>regularDriverModal(t.id);actions.append(b);}
+  const cancel = document.querySelector('#detail-cancel');
+  if (cancel) {
+    cancel.onclick = () => confirmAction(t.id, 'cancel');
+    actions.append(cancel);
+  }
   if (user.role === 'owner' && ['awaiting_driver', 'needs_reassignment'].includes(t.status)) {
     const button = document.createElement('button'); button.className = 'btn'; button.textContent = 'Retry driver search';
-    button.onclick = () => run(() => sendAction(t.id, 'retry')); $('#modal').append(button);
+    button.onclick = () => run(() => sendAction(t.id, 'retry')); actions.append(button);
   }
+  if (actions.childElementCount) document.querySelector('#modal h2').after(actions);
 }
 function canReplaceConfirmed(trip) {
   return !!trip.driverId&&!trip.poolParentId&&!trip.collectedStops&&['accepted','heading_to_pickup','arrived'].includes(trip.status);
@@ -987,14 +1984,16 @@ function replaceConfirmed(id) {
   };
 }
 async function sendAction(id, action, extra = {}) {
-  await api(`/api/trips/${id}/action`, { action, ...extra }, crypto.randomUUID());
-  if ($('#modal')?.open) $('#modal').close();
+  const openedDialog = $('dialog[open]');
+  const dialogContent = openedDialog?.firstElementChild;
+  await api(`/api/trips/${id}/action`, { action, ...extra }, requestId());
+  if (openedDialog?.open && openedDialog.firstElementChild === dialogContent) openedDialog.close();
   await refresh(); toast(action === 'offer' ? 'Offer sent. Waiting for the driver to accept.' : action === 'release' ? 'Trip reopened with a red flag. Replacement dispatch will retry automatically.' : 'Trip updated.');
 }
 function confirmRideComplete(id) {
   const trip = state.trips.find(t=>t.id===id);
   if (user.role !== 'driver' || !trip || trip.driverId !== user.driverId || trip.status !== 'onboard') return;
-  const key = crypto.randomUUID();
+  const key = requestId();
   modal('<section class="complete-ride-dialog"><span class="completion-icon">' + icon('check') +
     '</span><h2>Finish this ride?</h2><p>' + esc(trip.reference) + ' · Drop-off at <strong>' + esc(trip.destination) +
     '</strong></p><p>Tap Done after all passengers have been dropped off.</p><p class="validation-error" id="complete-ride-error" role="alert"></p>' +
@@ -1036,14 +2035,27 @@ function reasonModal(id, action, offerId) {
     finally { document.querySelectorAll('[data-reason]').forEach(button => { button.disabled = false; }); }
   }));
 }
+function fleetImportPage(){
+  return ownerPageHeading('Fleet data upload','Import vehicle records or a driver list from Excel.')+
+    '<section class="panel upload-panel"><form id="fleet-import-form"><label>Fleet workbook (.xlsx)<input type="file" name="file" accept=".xlsx" required></label><p>For older .xls files, save a copy as .xlsx first. Vehicle sheets require a VIN column. Driver sheets require Driver Name.</p><button class="btn primary">Import fleet records</button></form><p id="fleet-import-status" role="status"></p></section><section class="panel upload-panel"><h2>Validate completed roster</h2><form id="roster-validate"><label>Completed roster (.xlsx)<input type="file" name="roster" accept=".xlsx" required></label><button class="btn primary" value="validate">Validate roster</button> <button class="btn" value="apply">Apply roster</button></form><p id="roster-result" role="status"></p><ol id="roster-issues"></ol></section>';
+}
+const appearanceOptions = [['default','Royal Blue'],['teal','Teal'],['violet','Violet'],['light','Light']];
+try {
+  document.documentElement.dataset.appearance = localStorage.getItem('royalcab.appearance') || 'default';
+} catch {}
+function appearanceControl() {
+  return '<section class="panel settings-panel"><h2>Appearance</h2><label>App colors<select id="app-appearance">'+
+    appearanceOptions.map(([value,label])=>'<option value="'+value+'" '+(document.documentElement.dataset.appearance===value?'selected':'')+'>'+label+'</option>').join('')+
+    '</select></label></section>';
+}
 function settingsPage(){
   const s=state.settings||{};
-  return heading('OPERATIONS SETTINGS','Set the pickup timing.','These settings apply to automatic assignment and one-time customer reminders.')+
+  return heading('OPERATIONS SETTINGS','Dispatch settings','These settings apply to automatic assignment and one-time customer reminders.')+
     '<section class="panel settings-panel"><form id="operations-settings"><h2>Automatic driver offers</h2><p>Start looking for the nearest eligible driver this many minutes before pickup.</p><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="dispatch-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="dispatch-lead">15 minutes</button></div><label>Driver-offer lead time (minutes)<input id="dispatch-lead" type="number" min="1" max="180" step="1" required value="'+(s.dispatchLeadMinutes||15)+'"></label><h2>Urgent pickup recovery</h2><p>After a declined or expired offer, alert a small group when pickup is close. The first acceptance wins.</p><label class="checkbox-label"><input id="urgent-enabled" type="checkbox" '+(s.urgentGroupEnabled?'checked':'')+'> Enable urgent group offers</label><label>Urgent window (minutes before pickup)<input id="urgent-minutes" type="number" min="1" max="30" required value="'+(s.urgentGroupMinutes||5)+'"></label><label>Drivers per group<select id="urgent-size"><option value="2" '+(s.urgentGroupSize===2?'selected':'')+'>2 drivers</option><option value="3" '+(s.urgentGroupSize!==2?'selected':'')+'>3 drivers</option></select></label><h2>Customer pickup reminder</h2><p>Send once before pickup, after a driver has confirmed. If confirmation happens inside this window, the confirmation message covers the reminder.</p><label class="checkbox-label"><input id="reminders-enabled" type="checkbox" '+(s.customerRemindersEnabled?'checked':'')+'> Enable customer pickup reminders</label><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="reminder-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="reminder-lead">15 minutes</button></div><label>Customer reminder lead time (minutes)<input id="reminder-lead" type="number" min="1" max="180" step="1" required value="'+(s.customerReminderMinutes||10)+'"></label><h2>Confirmation message</h2><p>Queued immediately when the driver accepts. Includes pickup time, driver name and phone, car model, plate and destination.</p><label>Company name<input id="company-name" required maxlength="80" value="'+esc(s.companyName||'ProLift')+'"></label><label>Message timezone<input id="message-timezone" required value="'+esc(s.timezone||'America/New_York')+'"></label><div class="notice">'+icon('bell')+' Demo delivery: messages are saved in Messages and the customer app. No SMS leaves this computer.</div><button class="btn primary" type="submit">Save settings</button></form></section>';
 }
 function messagesPage(){
   const messages=(state.customerMessages||[]).slice(0,100);
-  return heading(user.role==='owner'?'CUSTOMER COMMUNICATION':'RIDE UPDATES',user.role==='owner'?'Customer message outbox.':'Your ride updates.','Confirmation, pickup reminders, and assignment changes.')+
+  return heading(user.role==='owner'?'CUSTOMER COMMUNICATION':'RIDE UPDATES',user.role==='owner'?'Customer updates':'Your ride updates.','Confirmation, pickup reminders, and assignment changes.')+
     '<div class="notice">'+icon('bell')+' Demo messages only. A real SMS service has not been connected; none of these messages were sent as texts.</div><section class="panel message-list">'+(messages.length?messages.map(m=>'<article class="customer-message '+(m.superseded?'superseded':'')+'"><div class="record-main"><strong>'+esc(({stage_depart:'Driver on the way',stage_arrive:'Driver arrived',stage_pickup:'Ride underway',stage_complete:'Ride completed',confirmed:'Ride confirmed',pickup_reminder:'Pickup reminder',released:'Driver replacement',cancelled:'Ride cancelled'})[m.type]||m.type)+'</strong><span class="badge '+(m.superseded?'cancelled':'offered')+'">'+(m.superseded?'Old details — replaced':'Demo · not sent')+'</span></div><p class="message-meta">'+esc(m.reference)+' · '+esc(m.customerName)+' · '+esc(m.recipient)+' · '+date(m.createdAt)+' '+time(m.createdAt)+'</p><p class="message-body">'+esc(m.text)+'</p></article>').join(''):'<div class="empty"><h3>No customer messages yet</h3><p>A confirmation is created when a driver accepts a ride.</p></div>')+'</section><p class="help">Showing the latest '+messages.length+' messages. Confirmation and reminder entries are deduplicated per driver assignment.</p>';
 }
 function localInputDate(d){const date=new Date(d);date.setMinutes(date.getMinutes()-date.getTimezoneOffset());return date.toISOString().slice(0,10);}
@@ -1061,7 +2073,7 @@ async function generateReport(keepVisible = false){
 function reportsPage(){
   if(!reportFrom){const first=new Date();first.setDate(1);reportFrom=localInputDate(first);reportTo=localInputDate(new Date());}
   const fields=reportGroup==='driver'?[['name','Driver'],['id','Driver ID'],['offered','Offers'],['declined','Declines'],['timedOut','Timeouts'],['assignments','Assignments'],['completed','Completed'],['released','Dropped'],['cancelled','Cancelled'],['active','Active'],['unrecorded','Outcome not recorded'],['onboardMinutes','Recorded minutes onboard']]:[['name','Plate'],['detail','Vehicle'],['assignments','Assignments'],['completed','Completed'],['released','Dropped'],['cancelled','Cancelled'],['active','Active'],['unrecorded','Outcome not recorded'],['onboardMinutes','Recorded minutes onboard']];
-  return heading('FLEET REPORTING','Driver and car reports.','Counts come from recorded offers and assignment history. No estimated revenue or distance is added.')+
+  return heading('FLEET REPORTING','Reports','Counts come from recorded offers and assignment history. No estimated revenue or distance is added.')+
     '<section class="panel"><form id="report-filters" class="report-filters"><div class="filter-tabs">'+[['driver','By driver'],['vehicle','By car']].map(([id,label])=>'<button type="button" data-report-group="'+id+'" class="'+(reportGroup===id?'selected':'')+'">'+label+'</button>').join('')+'</div><label>From<input id="report-from" type="date" required value="'+reportFrom+'"></label><label>Through<input id="report-to" type="date" required value="'+reportTo+'"></label><button class="btn primary" type="submit">Generate report</button></form>'+
     (reportData?'<div class="report-summary"><span><strong>'+reportData.summary.trips+'</strong> Scheduled trips</span><span><strong>'+reportData.summary.completedTrips+'</strong> Completed</span><span><strong>'+reportData.summary.cancelledTrips+'</strong> Cancelled</span><span><strong>'+reportData.summary.unassigned+'</strong> Unassigned</span><a class="btn" href="/api/reports.csv?'+esc(reportQuery())+'">Download CSV</a></div><div class="table-scroll"><table class="report-table"><thead><tr>'+fields.map(([,label])=>'<th>'+label+'</th>').join('')+'</tr></thead><tbody>'+reportData.rows.map(row=>'<tr>'+fields.map(([key,label])=>'<td data-label="'+esc(label)+'">'+esc(row[key]??'—')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'+(reportData.rows.length?'':'<div class="empty"><p>No matching activity in this period.</p></div>')+'<div class="report-note">Generated '+time(reportData.generatedAt)+'. Date basis: scheduled pickup, in '+esc(Intl.DateTimeFormat().resolvedOptions().timeZone)+'. Reassignments count as separate assignments. Minutes include only recorded start/end times. '+(reportData.legacyTrips?reportData.legacyTrips+' older trip(s) lack assignment snapshots; missing cars are shown as Vehicle not recorded.':'Vehicle identity is preserved at acceptance.')+'</div>':reportLoading?'<div class="empty" role="status"><h3>Generating report…</h3></div>':'<div class="empty"><h3>Choose dates, then generate your report.</h3><p>Switch between driver and car totals and download either report as CSV.</p></div>')+'</section>';
 }
@@ -1115,11 +2127,10 @@ function scheduleRideCard(t, now) {
     (issue||late?'Review ride ':'View ride ')+esc(t.reference)+'">'+(issue||late?'Review ride':'View details')+'</button></div></article>';
 }
 function schedulePageView() {
-  const now=Date.now();
+  const now=lastSnapshotAt||Date.now();
   const view=ProLiftBoard.schedule(state.trips,{now,period:schedulePeriod,search:scheduleSearch,page:schedulePage});
   schedulePage=view.page;
-  return heading('DISPATCH SCHEDULE','Pickup schedule','Current rides, overdue pickups, and upcoming bookings.',
-    '<button class="btn" id="design-vehicle-plan">Design car schedule</button><button class="btn" data-go="imports">'+icon('upload')+' Import file</button><button class="btn primary" id="add-planned-ride">'+icon('plus')+' Add planned ride</button>')+
+  return heading('DISPATCH SCHEDULE','Upcoming rides','Current rides, overdue pickups, and upcoming bookings.')+
     '<section class="panel schedule-board"><div class="table-toolbar schedule-toolbar"><div class="filter-tabs" aria-label="Pickup period">'+
     [['priority','Current & next hour'],['today','Today'],['tomorrow','Tomorrow'],['week','Next 7 days'],['all','All upcoming']].map(([id,label])=>
       '<button data-schedule-period="'+id+'" aria-pressed="'+(schedulePeriod===id)+'" class="'+(schedulePeriod===id?'selected':'')+'">'+label+'</button>').join('')+
@@ -1161,8 +2172,8 @@ function rideExtras(t){
  return '<div class="ride-progress" role="status"><strong>'+esc(stage)+'</strong><div class="progress-steps">'+['Scheduled','Confirmed','Pickup','Completed'].map((label,i)=>'<span class="'+(i<=({accepted:1,heading_to_pickup:1,arrived:2,onboard:2,completed:3}[t.status]||0)?'done':'')+'">'+label+'</span>').join('')+'</div></div><div class="card-actions"><button class="btn" data-help-trip="'+t.id+'">Get trip help</button>'+(t.status==='completed'?'<a class="btn" href="/api/trips/'+t.id+'/summary.txt">Download ride summary</a>':'')+'</div>';
 }
 function scheduledPage(){return heading('PLAN YOUR WORK','Scheduled rides','Reserve a future pickup. Go online before dispatch opens and accept the live offer to confirm it.')+'<div class="notice">Reservations are provisional. Unavailable drivers are replaced automatically. Routes and travel times are simulated.</div><button class="btn" id="load-scheduled">Refresh scheduled rides</button>'+(scheduledData?'<div class="trip-card-grid">'+scheduledData.trips.map(t=>'<article class="panel trip-card"><strong>'+esc(t.reference)+'</strong><h2>'+date(t.pickupAt)+' · '+time(t.pickupAt)+'</h2><p>'+esc(t.pickup)+' → '+esc(t.destination)+'</p><p>'+t.passengers+' passenger(s) · '+esc(t.requirements.join(', ')||'Standard vehicle')+'</p><p>Be online by '+time(t.window.startsAt)+'. Acceptance required.</p>'+(t.reservation?'<span class="badge accepted">Reserved by you</span><button class="btn" data-unreserve="'+t.id+'">Release reservation</button>':'<button class="btn primary" data-reserve="'+t.id+'" '+(!t.suitable?'disabled':'')+'>Reserve pickup</button>')+'</article>').join('')+'</div><div class="pagination"><button class="btn" data-scheduled-page="'+(scheduledData.page-1)+'" '+(scheduledData.page<=1?'disabled':'')+'>Previous</button><span>'+scheduledData.total+' rides · Page '+scheduledData.page+' / '+scheduledData.pages+'</span><button class="btn" data-scheduled-page="'+(scheduledData.page+1)+'" '+(scheduledData.page>=scheduledData.pages?'disabled':'')+'>Next</button></div>':'<section class="panel empty"><h2>Find work for the next 7 days.</h2><p>Select Refresh scheduled rides to load available pickups.</p></section>');}
-function helpPage(){return heading('TRIP SUPPORT','Help requests','Send a request from the ride card. Replies from your fleet owner appear here.')+'<div class="notice">Local demo inbox. Requests are saved for the owner; this is not a staffed emergency service.</div><div class="trip-card-grid">'+((state.supportRequests||[]).length?(state.supportRequests||[]).map(r=>'<article class="panel trip-card"><div class="trip-card-head"><strong>'+esc(r.reference)+'</strong>'+badge(r.status)+'</div><h2>'+esc(r.category.replaceAll('_',' '))+'</h2><p>'+esc(r.details)+'</p><small>'+date(r.createdAt)+' · '+time(r.createdAt)+'</small>'+(r.ownerReply?'<p><strong>Owner reply:</strong> '+esc(r.ownerReply)+'</p>':'')+(user.role==='owner'?'<button class="btn" data-help-review="'+r.id+'">Review request</button>':'')+'</article>').join(''):'<section class="panel empty"><h2>No help requests.</h2><p>Use Get trip help on a ride to start a request.</p></section>')+'</div>';}
-setInterval(()=>document.querySelectorAll('[data-offer-countdown]').forEach(el=>{const seconds=Math.max(0,Math.ceil((Number(el.dataset.offerCountdown)-Date.now())/1000));el.textContent=seconds?seconds+' seconds to respond':'Offer expired — waiting for dispatch';}),1000);
+function helpPage(title='Help requests'){return heading('TRIP SUPPORT',title,'Send a request from the ride card. Replies from your fleet owner appear here.')+'<div class="notice">Local demo inbox. Requests are saved for the owner; this is not a staffed emergency service.</div><div class="trip-card-grid">'+((state.supportRequests||[]).length?(state.supportRequests||[]).map(r=>'<article class="panel trip-card"><div class="trip-card-head"><strong>'+esc(r.reference)+'</strong>'+badge(r.status)+'</div><h2>'+esc(r.category.replaceAll('_',' '))+'</h2><p>'+esc(r.details)+'</p><small>'+date(r.createdAt)+' · '+time(r.createdAt)+'</small>'+(r.ownerReply?'<p><strong>Owner reply:</strong> '+esc(r.ownerReply)+'</p>':'')+(user.role==='owner'?'<button class="btn" data-help-review="'+r.id+'">Review request</button>':'')+'</article>').join(''):'<section class="panel empty"><h2>No help requests.</h2><p>Use Get trip help on a ride to start a request.</p></section>')+'</div>';}
+setInterval(()=>document.querySelectorAll('[data-offer-countdown]').forEach(el=>{const seconds=offerSecondsRemaining(Number(el.dataset.offerCountdown));el.textContent=seconds?seconds+' seconds to respond':'Offer expired — waiting for dispatch';}),1000);
 function bindRideFeatures(){
  const load=()=>run(async()=>{scheduledData=await api('/api/driver/scheduled?page='+scheduledPageNumber);render();});
  if($('#load-scheduled'))$('#load-scheduled').onclick=load;
@@ -1179,7 +2190,7 @@ var readinessData=null,readinessLoading=false,readinessRevision=-1,readinessFilt
 function readinessPage(){
  const d=readinessData,filters=[['all','All active'],['attention','Needs attention'],['searching','Searching'],['reply','Awaiting reply'],['confirmed','Confirmed'],['on_trip','On trip'],['planned','Later']];
  const rows=(d?.rows||[]).filter(r=>readinessFilter==='all'||r.level===readinessFilter),pages=Math.max(1,Math.ceil(rows.length/25));readinessPageNumber=Math.min(readinessPageNumber,pages);
- return heading('DISPATCH READINESS','Know what needs you.','Review late pickups, driver replies and future work in one place.','<button class="btn" id="refresh-readiness">Refresh</button><button class="btn primary" data-go="schedule">Plan pickups</button>')+
+ return heading('DISPATCH READINESS','Pickup readiness','Review late pickups, driver replies and future work in one place.','<button class="btn" id="refresh-readiness">Refresh</button><button class="btn primary" data-go="schedule">Plan pickups</button>')+
  '<div class="readiness-counts">'+[['attention','Needs attention'],['reply','Awaiting reply'],['confirmed','Confirmed'],['planned','Scheduled later']].map(([key,label])=>'<button class="panel readiness-count '+(key==='attention'&&d?.counts[key]?'risk':'')+'" data-readiness-filter="'+key+'"><strong>'+(d?.counts[key]||0)+'</strong><span>'+label+'</span></button>').join('')+'</div><div class="notice">Automatic dispatch runs while this server is running. A proposed driver is not confirmed until they accept. Travel times and notifications remain simulated.</div><section class="panel"><div class="filter-tabs readiness-filters">'+filters.map(([key,label])=>'<button class="'+(readinessFilter===key?'selected':'')+'" data-readiness-filter="'+key+'">'+label+'</button>').join('')+'</div>'+
  (!d?'<div class="empty" role="status">Loading pickup readiness…</div>':!rows.length?'<div class="empty"><h2>Nothing in this group.</h2><p>Choose another group to review your active pickups.</p></div>':'<div class="readiness-list">'+rows.slice((readinessPageNumber-1)*25,readinessPageNumber*25).map(r=>'<article class="readiness-row '+(r.level==='attention'?'risk':'')+'"><div><small>'+date(r.pickupAt)+' · '+time(r.pickupAt)+'</small><h3>'+esc(r.reference)+' · '+esc(r.customerName)+'</h3><p>'+esc(r.pickup)+' → '+esc(r.destination)+'</p><strong>'+esc(r.reason)+'</strong><p>Driver: '+esc(r.driverName||'Not confirmed')+'</p></div><div class="card-actions"><button class="btn" data-detail="'+r.id+'">Ride details</button><button class="btn primary" data-dispatch-review="'+r.id+'">Why this driver?</button></div></article>').join('')+'</div>')+
  '<div class="pagination"><button class="btn" data-readiness-page="'+(readinessPageNumber-1)+'" '+(readinessPageNumber===1?'disabled':'')+'>Previous</button><span>'+rows.length+' rides · '+readinessPageNumber+' / '+pages+'</span><button class="btn" data-readiness-page="'+(readinessPageNumber+1)+'" '+(readinessPageNumber>=pages?'disabled':'')+'>Next</button></div></section>'+(d?'<p class="help">Checked '+time(d.at)+'. Includes overdue rides; demo walkthrough trips are separate.</p>':'');
@@ -1255,7 +2266,7 @@ function bindPhoneTracking() {
         if (generation!==gpsGeneration || user?.role!=='driver' || !navigator.onLine || busy || Date.now()-lastSent<5000) return;
         busy=true; lastSent=Date.now();
         try {
-          const reading={id:crypto.randomUUID(),latitude:position.coords.latitude,longitude:position.coords.longitude,
+          const reading={id:requestId(),latitude:position.coords.latitude,longitude:position.coords.longitude,
             accuracy:position.coords.accuracy,capturedAt:Math.round(position.timestamp)};
           const result=await api('/api/driver/location',{points:[reading]},undefined,AbortSignal.timeout(10000));
           if(generation!==gpsGeneration) return;
@@ -1281,7 +2292,147 @@ function bindPhoneTracking() {
     } finally { button.disabled=false; }
   });
 }
+const fleetPanelLayout = { collapsed: new Set(), expanded: '', heights: {} };
+try {
+  const saved = JSON.parse(localStorage.getItem('royalcab.fleet-panel-layout') || '{}');
+  fleetPanelLayout.collapsed = new Set(Array.isArray(saved.collapsed) ? saved.collapsed : []);
+  fleetPanelLayout.expanded = saved.expanded || '';
+  fleetPanelLayout.heights = saved.heightVersion === 1 ? saved.heights || {} : {};
+} catch {}
+const fleetPanelWindows = new Map();
+const fleetPanelView = new URLSearchParams(location.search).get('fleetPanel');
+function bindFleetPanelLayout() {
+  const dashboard = $('.live-dashboard');
+  if (!dashboard) return;
+  const panels = [
+    ['map','#fleet-map','.dispatch-map-title','Fleet map'],
+    ['queue','#ride-queue','header','Ride queue'],
+    ['drivers','#driver-duty','.driver-duty-heading','Vehicles and driver duty'],
+    ['trips','.live-active-board','h2','Active trips']
+  ];
+  if (panels.some(([key])=>key===fleetPanelView)) dashboard.dataset.panelWindow = fleetPanelView;
+  function saveLayout() {
+    try {
+      localStorage.setItem('royalcab.fleet-panel-layout',JSON.stringify({
+        ...fleetPanelLayout, heightVersion:1, collapsed:[...fleetPanelLayout.collapsed]
+      }));
+    } catch {}
+  }
+  function changeLayout() {
+    dashboard.dataset.expandedPanel = fleetPanelLayout.expanded;
+    for (const [key, selector] of panels) {
+      const panel = dashboard.querySelector(selector);
+      if (!panel) continue;
+      const collapsed = fleetPanelView !== key && fleetPanelLayout.collapsed.has(key);
+      panel.dataset.collapsed = String(collapsed);
+      const toggle = panel.querySelector('[data-panel-collapse="'+key+'"]');
+      const expand = panel.querySelector('[data-panel-expand="'+key+'"]');
+      toggle.textContent = collapsed ? 'Show' : 'Hide';
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+      expand.textContent = fleetPanelLayout.expanded === key ? 'Restore' : 'Expand';
+      expand.setAttribute('aria-pressed',String(fleetPanelLayout.expanded === key));
+    }
+    requestAnimationFrame(()=>geoMap?.invalidateSize({pan:false}));
+  }
+  for (const [key, selector, header, title] of panels) {
+    const panel = dashboard.querySelector(selector);
+    const heading = panel?.querySelector(header);
+    if (!heading) continue;
+    const controls = document.createElement('span');
+    controls.className = 'live-panel-controls';
+    controls.innerHTML = '<button type="button" data-panel-collapse="'+key+'" aria-label="Show or hide '+title+'"></button>'+
+      '<button type="button" data-panel-expand="'+key+'" aria-label="Expand or restore '+title+'"></button>';
+    if (key === 'drivers' || key === 'trips') {
+      const content = panel.querySelector(key === 'drivers' ? '#driver-duty-roster' : '.live-active-scroll, .live-active-board > p');
+      if (content) {
+        const resize = document.createElement('button');
+        resize.type = 'button';
+        resize.className = 'fleet-panel-resize';
+        resize.setAttribute('aria-label','Resize '+title+' vertically. Use up and down arrows.');
+        resize.title = 'Drag down to show more rows';
+        const setHeight = height => {
+          const value = Math.round(Math.max(90, Math.min(1200,height)));
+          fleetPanelLayout.heights[key] = value;
+          panel.style.setProperty('--fleet-panel-height',value+'px');
+        };
+        if (Number.isFinite(fleetPanelLayout.heights[key])) setHeight(fleetPanelLayout.heights[key]);
+        resize.onpointerdown = event => {
+          if (event.button !== 0) return;
+          const startY = event.clientY, startHeight = content.getBoundingClientRect().height;
+          resize.setPointerCapture(event.pointerId);
+          resize.onpointermove = move => setHeight(startHeight+move.clientY-startY);
+          resize.onlostpointercapture = () => {
+            resize.onpointermove = null;
+            saveLayout();
+          };
+        };
+        resize.onkeydown = event => {
+          if (!['ArrowUp','ArrowDown'].includes(event.key)) return;
+          event.preventDefault();
+          setHeight(content.getBoundingClientRect().height+(event.key==='ArrowDown'?40:-40));
+          saveLayout();
+        };
+        panel.append(resize);
+      }
+    }
+    const pop = document.createElement('button');
+    pop.type = 'button';
+    pop.textContent = fleetPanelView === key ? 'Pop in' : 'Pop out';
+    pop.setAttribute('aria-label',pop.textContent+' '+title);
+    pop.onclick = () => {
+      if (fleetPanelView === key) {
+        if (window.opener && !window.opener.closed) {
+          window.opener.focus();
+          window.close();
+        } else {
+          const url = new URL(location.href);
+          url.searchParams.delete('fleetPanel');
+          location.assign(url);
+        }
+        return;
+      }
+      const existing = fleetPanelWindows.get(key);
+      if (existing && !existing.closed) { existing.focus(); return; }
+      const url = new URL(location.href);
+      url.hash = '';
+      url.searchParams.set('fleetPanel',key);
+      const popup = window.open(url,'royalcab-fleet-'+key,'popup,width=960,height=760');
+      if (popup) fleetPanelWindows.set(key,popup);
+      else toast('Allow pop-ups for RoyalCab to open this panel.',true);
+    };
+    controls.append(pop);
+    heading.append(controls);
+    controls.onclick = event => {
+      if (event.target.hasAttribute('data-panel-collapse')) {
+        if (!fleetPanelLayout.collapsed.delete(key)) {
+          fleetPanelLayout.collapsed.add(key);
+          if (fleetPanelLayout.expanded === key) fleetPanelLayout.expanded = '';
+        }
+      } else if (event.target.hasAttribute('data-panel-expand')) {
+        fleetPanelLayout.expanded = fleetPanelLayout.expanded === key ? '' : key;
+        fleetPanelLayout.collapsed.delete(key);
+      } else return;
+      saveLayout();
+      changeLayout();
+    };
+  }
+  changeLayout();
+}
 function bindGeographicMap(){
+ bindFleetPanelLayout();
+ const mapThemes = document.querySelectorAll('[data-map-theme-choice]');
+ function showMapTheme() {
+   const map = $('#geo-fleet-map');
+   if (map) map.dataset.mapTheme = fleetMapTheme;
+   mapThemes.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mapThemeChoice===fleetMapTheme)));
+ }
+ mapThemes.forEach(button=>button.onclick=()=>{
+   fleetMapTheme=button.dataset.mapThemeChoice;
+   try { localStorage.setItem('royalcab.map-theme',fleetMapTheme); } catch {}
+   showMapTheme();
+ });
+ showMapTheme();
+ document.querySelectorAll('[data-fleet-photo]').forEach(button=>button.onclick=()=>editFleetProfilePhoto(state.drivers.find(d=>d.id===button.dataset.fleetPhoto)));
  document.querySelectorAll('[data-map-priority]').forEach(b=>b.onclick=()=>{mapPriorityFilter=b.dataset.mapPriority;render();fitPriorityMap();});
  document.querySelectorAll('[data-scenario-action]').forEach(el=>el.onclick=()=>run(async()=>{await api('/api/demo/charlotte-fleet',{action:el.dataset.scenarioAction});fleetSource='scenario';fleetFilter='all';selectedScenarioTrip=null;selectedDriverId=null;if(geoMap){geoMap.remove();geoMap=null;geoMarkers=null;}await refresh();}));
  document.querySelectorAll('[data-follow-scenario]').forEach(el=>el.onclick=()=>{selectedScenarioTrip=el.dataset.followScenario;const t=state.trips.find(t=>t.id===selectedScenarioTrip),o=state.offers.find(o=>o.tripId===t.id&&o.status==='pending');selectedDriverId=t.driverId||o?.driverId||null;render();});
@@ -1305,19 +2456,22 @@ function bindGeographicMap(){
  if (!fleetMapProvider()) { status.textContent = 'Map unavailable. Driver coordinates remain visible in the fleet list.'; return; }
  status.textContent = googleFleetProvider ? 'Google Maps' : googleFleetFailed ? 'Google Maps unavailable · Showing OpenStreetMap' : 'OpenStreetMap';
  const identity = fleetIdentity(fleetSource);
- const items=ProLiftBoard.fleet(state).filter(i=>matchesFleetSource(i.driver)&&(fleetFilter==='all'||i.status===fleetFilter)&&(tab!=='overview'||fleetRowMatches(i))),located=items.filter(i=>i.hasLocation);
+ const items=ProLiftBoard.fleet(state,fleetNow()).filter(i=>matchesFleetSource(i.driver)&&(fleetFilter==='all'||i.status===fleetFilter)&&(tab!=='overview'||fleetRowMatches(i))),located=items.filter(i=>i.hasLocation);
  let initial=false;
  if(!geoMap){initial=true;geoMap=fleetMapProvider().map(node,{zoomControl:true,scrollWheelZoom:true,zoomAnimation:false}).setView(config.map?.center||[35.2271,-80.8431],config.map?.zoom||13);geoMarkers=fleetMapProvider().layerGroup().addTo(geoMap);geoPriorityLayer=fleetMapProvider().layerGroup().addTo(geoMap);geoFocusedRoute=null;geoScenarioRoutes=fleetMapProvider().layerGroup().addTo(geoMap);geoTrail=fleetMapProvider().polyline([],{color:'#285fda',weight:4}).addTo(geoMap);if (!googleFleetProvider) L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).on('tileerror',()=>{const el=$('#geo-map-status');if(el)el.textContent='Street tiles could not load. Vehicle coordinates are still available.';}).addTo(geoMap);geoMap.on('dragstart zoomstart',()=>{mapInteracting=true;});geoMap.on('moveend zoomend',()=>{mapInteracting=false;});geoMap.on('dragstart',stopVehicleFollow);}
- geoMarkers.clearLayers();const colors={available:'#159a73',onride:'#2865e1',offered:'#c48a1a',offline:'#8290a6',stale:'#c0545b'};
- for(const item of located){const d=item.driver,stopped=d.locationSource==='device'&&d.trackingEnabled===false,age=Math.max(0,Math.floor((Date.now()-d.lastLocationAt)/1000)),label=d.locationSource==='device'?(stopped?'Sharing stopped':age>120?'Location stale':'Phone GPS'):d.locationSource==='replay'?'TEST · dummy coordinates':d.locationSource==='scenario'?'CHARLOTTE FLEET TEST':'SAMPLE';
-  const priorityRide=item.trip||state.trips.find(t=>t.id===item.offer?.tripId),carPriority=priorityRide?ProLiftBoard.priority(priorityRide):'later';
-  const carIcon=fleetMapProvider().divIcon({className:'fleet-car-marker fleet-theme-'+identity.theme+' priority-car-'+carPriority+' '+(stopped?'offline':item.status)+(selectedDriverId===d.id?' chosen':''),iconSize:[44,44],iconAnchor:[22,22],html:'<span class="fleet-car-disc"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17H3v-7l3-6h12l3 6v7h-2M5 17h14M6 10h12M6 14h1m10 0h1M5 17v3m14-3v3"/></svg><span class="fleet-marker-code">'+identity.code+'</span></span>'});const marker=fleetMapProvider().marker([d.lat,d.lng],{icon:carIcon,title:d.name+' · '+identity.label+' · '+label,alt:d.name,keyboard:true,riseOnHover:true}).addTo(geoMarkers);
+ geoMarkers.clearLayers();
+ for(const item of located){const d=item.driver,stopped=d.locationSource==='device'&&d.trackingEnabled===false,age=Math.max(0,Math.floor(((fleetNow())-d.lastLocationAt)/1000)),label=d.locationSource==='device'?(stopped?'Sharing stopped':age>120?'Location stale':'Phone GPS'):d.locationSource==='replay'?'TEST · dummy coordinates':d.locationSource==='scenario'?'CHARLOTTE FLEET TEST':'SAMPLE';
+  const priorityRide=item.trip||state.trips.find(t=>t.id===item.offer?.tripId),carPriority=priorityRide?ProLiftBoard.priority(priorityRide,fleetNow()):'later';
+  const minutesToDropoff = (item.trip?.plannedEndAt - fleetNow()) / 60000;
+  const markerStatus = stopped ? 'offline' : item.status === 'onride' && item.trip?.status === 'onboard' &&
+    minutesToDropoff >= 0 && minutesToDropoff <= 5 ? 'finishing' : item.status;
+  const carIcon=fleetMapProvider().divIcon({className:'fleet-car-marker fleet-theme-'+identity.theme+' priority-car-'+carPriority+' ' +markerStatus+ (selectedDriverId===d.id?' chosen':''),iconSize:[44,44],iconAnchor:[22,22],html:'<span class="fleet-car-disc"><svg viewBox="0 0 56 40" aria-hidden="true"><ellipse cx="29" cy="33" rx="24" ry="5" fill="#020911" opacity=".55"/><path d="M4 25 7 19 16 16 22 8 38 6 46 10 50 16 53 21 51 28 47 31 11 34 5 30Z" fill="currentColor" stroke="#153024"/><path d="m16 16 7-7 15-2 8 4-5 6-18 3Z" fill="#fff" opacity=".26"/><path d="m17 17 6-7 5 7-5 4Zm13 1 13-3 3 4-14 4Z" fill="#0d1927"/><path d="m7 26 8-1 3 2-10 2Z" fill="#eaffef"/><path d="m48 21 4-1-1 4-4 1Z" fill="#ff7284"/><circle cx="16" cy="31" r="5" fill="#121b25"/><circle cx="43" cy="28" r="5" fill="#121b25"/><circle cx="16" cy="31" r="2" fill="#a8b5c0"/><circle cx="43" cy="28" r="2" fill="#a8b5c0"/></svg><span class="fleet-marker-code">'+identity.code+'</span></span>'});const marker=fleetMapProvider().marker([d.lat,d.lng],{icon:carIcon,title:d.name+' · '+identity.label+' · '+label,alt:d.name,keyboard:true,riseOnHover:true}).addTo(geoMarkers);
   marker.bindTooltip(d.locationSource==='replay'?'TEST CAR · dummy GPS':d.locationSource==='scenario'?esc(d.name)+' · '+({available:'Available',onride:'On ride',offered:'Offer pending',stale:'Location old',offline:'Offline'}[item.status]||item.status):esc(d.name)+' · '+label,{direction:'bottom',permanent:selectedDriverId===d.id,offset:[0,20],className:'fleet-car-label'});marker.bindPopup('<strong>'+esc(d.name)+'</strong><br>'+esc(d.vehicle)+' · '+esc(d.plate)+'<br>'+label+' · '+age+' seconds ago<br>'+d.lat.toFixed(5)+', '+d.lng.toFixed(5)+(Number.isFinite(d.locationAccuracy)?'<br>Accuracy '+Math.round(d.locationAccuracy)+' m':''));
   marker.on('click',()=>{if(tab==='overview'){chooseFleetVehicle(d.id);return;}if(item.trip){focusDispatchRide(item.trip.id);return;}if(item.offer){focusDispatchRide(item.offer.tripId);return;}modal('<h2>Driver details</h2>'+fleetDetails(item,{available:'Available',onride:'On ride',offered:'Awaiting reply',offline:'Offline',stale:'Location old'}));return;});
  }
  if(fleetSource==='replay'&&state.trackingReplay){geoTrail.setLatLngs(state.trackingReplay.trail.map(p=>[p.lat,p.lng]));}else geoTrail.setLatLngs([]);
  drawScenarioRoutes();drawPriorityMarkers();
- const fit=()=>{if(fleetSource==='scenario'&&state.fleetScenario){const points=located.map(i=>[i.driver.lat,i.driver.lng]);for(const t of scenarioTrips()){for(const name of [t.pickup,t.destination]){const p=config.places.find(p=>p.name===name);if(p)points.push([p.lat,p.lng]);}}if(points.length)geoMap.fitBounds(points,{padding:[65,65],maxZoom:15,animate:false});return;}if(fleetSource==='replay'&&state.trackingReplay){geoMap.fitBounds(state.trackingReplay.route.map(p=>[p.lat,p.lng]),{padding:[70,70],maxZoom:15,animate:false});return;}if(located.length)geoMap.fitBounds(located.map(i=>[i.driver.lat,i.driver.lng]),{padding:[45,45],maxZoom:15,animate:false});};
+ const fit=()=>{if(fleetSource==='test:'+state.lgtcReplay?.runId){const points=located.map(({driver})=>[driver.lat,driver.lng]);for(const ride of state.trips.filter(ride=>ride.demoRunId===state.lgtcReplay.runId)){for(const name of [ride.pickup,ride.destination]){const stop=config.places.find(place=>place.name===name);if(stop)points.push([stop.lat,stop.lng]);}}if(points.length)geoMap.fitBounds(points,{padding:[45,45],maxZoom:15,animate:false});return;}if(fleetSource==='scenario'&&state.fleetScenario){const points=located.map(i=>[i.driver.lat,i.driver.lng]);for(const t of scenarioTrips()){for(const name of [t.pickup,t.destination]){const p=config.places.find(p=>p.name===name);if(p)points.push([p.lat,p.lng]);}}if(points.length)geoMap.fitBounds(points,{padding:[65,65],maxZoom:15,animate:false});return;}if(fleetSource==='replay'&&state.trackingReplay){geoMap.fitBounds(state.trackingReplay.route.map(p=>[p.lat,p.lng]),{padding:[70,70],maxZoom:15,animate:false});return;}if(located.length)geoMap.fitBounds(located.map(i=>[i.driver.lat,i.driver.lng]),{padding:[45,45],maxZoom:15,animate:false});};
  if($('#fit-priority-map'))$('#fit-priority-map').onclick=fitPriorityMap;
  if(initial && !fitFocusedRide()) { if(vehicleFocusId) centerFleetVehicle(); else fit(); }
  if($('#fit-geo-fleet')) $('#fit-geo-fleet').onclick=()=>{stopVehicleFollow();fit();};
@@ -1333,13 +2487,185 @@ function bindGeographicMap(){
 }
 
 function bindActions() {
+  document.querySelectorAll('[data-live-total]').forEach(button=>button.onclick=()=>{
+    const kind = button.dataset.liveTotal;
+    if (kind==='attention') { openAttentionRides(); return; }
+    const driverFilter = kind==='available' ? 'online' : kind==='riding' ? 'busy' : '';
+    const panel = driverFilter ? 'drivers' : 'queue';
+    const selector = driverFilter ? '[data-duty-filter="'+driverFilter+'"]' :
+      '[data-dispatch-view="'+'later'+'"]';
+    const collapsed = document.querySelector('[data-panel-collapse="'+panel+'"][aria-expanded="false"]');
+    collapsed?.click();
+    document.querySelector(selector)?.click();
+    const target = document.querySelector(selector);
+    target?.scrollIntoView({block:'center'});
+    target?.focus({preventScroll:true});
+  });
+  const appearance = document.querySelector('#app-appearance');
+  if (appearance) appearance.onchange = () => {
+    document.documentElement.dataset.appearance = appearance.value;
+    try { localStorage.setItem('royalcab.appearance',appearance.value); } catch {}
+  };
+  document.querySelectorAll('[data-fleet-page-tab]').forEach(button=>button.onclick=()=>{
+    fleetPageTab=button.dataset.fleetPageTab;
+    render();
+    document.querySelector('[data-fleet-page-tab="'+fleetPageTab+'"]')?.focus({preventScroll:true});
+  });
+  document.querySelectorAll('[data-workbench-section]').forEach(button=>button.onclick=()=>{
+    const day = $('#lgtc-tab-day');
+    if (!day) {
+      const schedule = $('#lgtc-history');
+      schedule?.scrollIntoView({block:'center'});
+      schedule?.querySelector('button')?.focus({preventScroll:true});
+      toast('Open a saved schedule first.');
+      return;
+    }
+    day.click();
+    if (button.dataset.workbenchSection === 'approve') {
+      const review = $('#lgtc-dispatch-review');
+      if (review) { review.click(); return; }
+      toast('Build or open a day plan to review rides for dispatch.');
+    }
+    $('#lgtc-tab-day')?.scrollIntoView({block:'center'});
+  });
+  const sourceName=$('#additional-source-name');
+  if(sourceName){
+    sourceName.value=localStorage.getItem('royalcab.additionalSourceName')||'';
+    sourceName.onchange=()=>localStorage.setItem('royalcab.additionalSourceName',sourceName.value.trim());
+    if(sourceName.value)sourceName.closest('details').querySelector('summary').textContent='＋ '+sourceName.value;
+  }
+  document.querySelectorAll('[data-driver-documents]').forEach(button=>button.onclick=()=>run(()=>openDriverDocuments(button.dataset.driverDocuments)));
+  const rosterSearch=$('#fleet-roster-search');
+  if(rosterSearch)rosterSearch.oninput=()=>{
+    const query=rosterSearch.value.trim().toLowerCase();
+    const rows=[...document.querySelectorAll('.fleet-roster-row')];
+    for(const row of rows)row.hidden=!row.querySelector('summary').textContent.toLowerCase().includes(query);
+    $('#fleet-roster-empty').hidden=rows.some(row=>!row.hidden);
+  };
+  bindDriverMobileTrips();
+  const bulkRows = [...document.querySelectorAll('[data-bulk-trip]:enabled')];
+  const bulkActions = [...document.querySelectorAll('[data-bulk-action]')];
+  const bulkAll = $('#bulk-trip-all');
+  const updateBulkSelection = () => {
+    const count = bulkRows.filter(input => input.checked).length;
+    $('#bulk-trip-count').textContent = count + ' selected';
+    bulkAll.checked = count > 0 && count === bulkRows.length;
+    bulkAll.indeterminate = count > 0 && count < bulkRows.length;
+    bulkActions.forEach(button => button.disabled = count === 0);
+  };
+  if (bulkAll) {
+    bulkAll.disabled = !bulkRows.length;
+    bulkAll.onchange = () => { bulkRows.forEach(input => input.checked = bulkAll.checked); updateBulkSelection(); };
+    bulkRows.forEach(input => input.onchange = updateBulkSelection);
+    bulkActions.forEach(button => button.onclick = () => openBulkTripAction(button.dataset.bulkAction));
+  }
+  const refreshTrips = $('#refresh-trip-list');
+  if (refreshTrips) refreshTrips.onclick = () => run(async () => {
+    const selected = new Set(Array.from(document.querySelectorAll('[data-bulk-trip]:checked'), input => input.value));
+    await refresh();
+    if (tab !== 'trips') return;
+    document.querySelectorAll('[data-bulk-trip]').forEach(input => { input.checked = selected.has(input.value); });
+    updateBulkSelection();
+    toast('Trip list refreshed.');
+  });
+  const exportTrips = $('#export-trip-list');
+  if (exportTrips) exportTrips.onclick = () => {
+    const csv = filteredTripsCsv();
+    if (!csv) return;
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/owner/export-filtered.csv';
+    const field = document.createElement('input');
+    field.type = 'hidden';
+    field.name = 'csv';
+    field.value = csv;
+    form.append(field);
+    document.body.append(form);
+    form.submit();
+    form.remove();
+  };
+  const roster = $('#roster-validate');
+  if (roster) roster.onsubmit = event => {
+    event.preventDefault();
+    const file = roster.elements.roster.files[0], result = $('#roster-result'), issues = $('#roster-issues');
+    const button = event.submitter;
+    issues.replaceChildren();
+    if (!file || file.size > 5*1024*1024) {result.textContent='Choose a workbook up to 5 MB.';return;}
+    button.disabled=true;
+    result.textContent='Checking roster…';
+    const reader=new FileReader();
+    reader.onerror=()=>{result.textContent='Could not read the workbook.';button.disabled=false;};
+    reader.onload=async()=>{
+      try {
+        const report=await api('/api/fleet-roster/'+button.value,{filename:file.name,base64:reader.result.split(',')[1]});
+        result.textContent=(button.value==='apply'?'Roster applied. ':'')+report.drivers+' driver rows · '+report.vehicles+' vehicle rows · '+report.eligibleLinks+' eligible links · '+report.issues.length+' issues';
+        for(const issue of report.issues){
+          const li=document.createElement('li');
+          li.textContent=issue.sheet+' row '+issue.row+' — '+issue.message;
+          issues.append(li);
+        }
+      } catch(error){result.textContent=error.message;}
+      finally{button.disabled=false;}
+    };
+    reader.readAsDataURL(file);
+  };
+  const fleetImport = $('#fleet-import-form');
+  if (fleetImport) {
+    const status = $('#fleet-import-status');
+    const showCounts = result => { status.textContent = result.counts.map(row => row.total+' '+row.kind+' records').join(' · ') || 'No fleet records imported yet.'; };
+    api('/api/fleet-import').then(showCounts).catch(error => {status.textContent=error.message;});
+    fleetImport.onsubmit = event => {
+      event.preventDefault();
+      const file = fleetImport.elements.file.files[0];
+      const button = event.submitter;
+      if (!file || file.size > 5*1024*1024) {status.textContent='Choose a file up to 5 MB.';return;}
+      button.disabled = true;
+      const reader = new FileReader();
+      reader.onerror = () => {status.textContent='Could not read the workbook.';button.disabled=false;};
+      reader.onload = async () => {
+        try {showCounts(await api('/api/fleet-import',{filename:file.name,base64:reader.result.split(',')[1]}));}
+        catch (error) {status.textContent=error.message;}
+        finally {button.disabled=false;}
+      };
+      reader.readAsDataURL(file);
+    };
+  }
+  bindTripPreferences();
+  bindImportedFleet();
+  document.querySelectorAll('[data-fleet-kind]').forEach(button => button.onclick = () => run(async () => {
+    await api('/api/fleet/availability',{driverId:button.dataset.fleetDriver,kind:button.dataset.fleetKind,disabled:button.dataset.fleetDisabled==='true'});
+    await refresh();
+  }));
+  document.querySelectorAll('[data-trip-field]').forEach(input => {
+    input.oninput = () => { tripFilters[input.dataset.tripField] = input.value; };
+    input.onchange = () => {
+      tripFilters[input.dataset.tripField] = input.value;
+      boardPage = 1;
+      render();
+    };
+  });
+  if ($('#reset-trip-filters')) $('#reset-trip-filters').onclick = () => {
+    for (const key of Object.keys(tripFilters)) tripFilters[key] = '';
+    search = '';
+    filter = tripDataScope = 'all';
+    bookingOrder = 'next';
+    boardPage = 1;
+    render();
+  };
   document.querySelectorAll('[data-customer-paired-ride]').forEach(button => button.onclick = () => {
     selectedCustomerTrip = button.dataset.customerPairedRide;
     if ($('#modal[open]')) $('#modal').close();
     tab = 'mytrips';
     render();
   });
-  if ($('#driver-availability')) $('#driver-availability').onclick = driverAvailabilityModal;
+  if ($('#driver-availability')) $('#driver-availability').onclick = () => driverAvailabilityModal();
+  if ($('#schedule-management-date')) $('#schedule-management-date').onchange = event => {
+    if (!event.target.value) return;
+    scheduleManagementDate = event.target.value;
+    render();
+  };
+  document.querySelectorAll('[data-edit-shift]').forEach(button => button.onclick = () =>
+    driverAvailabilityModal(button.dataset.editShift,scheduleManagementDate));
   document.querySelectorAll('[data-replace-confirmed]').forEach(b=>b.onclick=()=>replaceConfirmed(b.dataset.replaceConfirmed));
   if (user.role === 'owner') bindLgtc();
   if (user.role === 'owner') bindDriverDayButtons();
@@ -1374,13 +2700,7 @@ function bindActions() {
     $('#fit-geo-fleet')?.click();
   };
   if($('#clear-fleet-search')) $('#clear-fleet-search').onclick=()=>{fleetSearch='';render();$('#fit-geo-fleet')?.click();};
-  document.querySelectorAll('[data-vehicle-focus]').forEach(b=>b.onclick=()=>chooseFleetVehicle(b.dataset.vehicleFocus,true));
-  if($('#clear-vehicle-focus')) $('#clear-vehicle-focus').onclick=()=>{stopVehicleFollow();vehicleFocusId=selectedDriverId=null;render();};
-  if($('#center-selected-vehicle')) $('#center-selected-vehicle').onclick=()=>centerFleetVehicle();
-  if($('#follow-selected-vehicle')) $('#follow-selected-vehicle').onclick=()=>{
-    if(followedVehicleId) stopVehicleFollow();
-    else {followedVehicleId=vehicleFocusId;centerFleetVehicle();render();}
-  };
+  document.querySelectorAll('[data-vehicle-focus]').forEach(b=>b.onclick=()=>chooseFleetVehicle(b.dataset.vehicleFocus));
   document.querySelectorAll('[data-dispatch-fleet]').forEach(button => {
     button.onclick = () => {
       if (fleetSource === button.dataset.dispatchFleet) return;
@@ -1409,8 +2729,31 @@ function bindActions() {
     $('#ride-queue h2')?.focus({preventScroll:true});
   };
   if($('#clear-dispatch-search')) $('#clear-dispatch-search').onclick=()=>{dispatchSearch='';dispatchPage=1;render();fitPriorityMap();};
+  if ($('#avl-status')) $('#avl-status').onchange = event => {
+    dutyFilter = event.target.value;
+    fleetFilter = 'all';
+    stopVehicleFollow();
+    vehicleFocusId = selectedDriverId = null;
+    render();
+    $('#avl-status')?.focus({preventScroll:true});
+  };
+  if ($('#avl-vehicle')) $('#avl-vehicle').onchange = event => {
+    const id = event.target.value;
+    dutyFilter = fleetFilter = 'all';
+    fleetSearch = '';
+    chooseFleetVehicle(id || null);
+    $('#avl-vehicle')?.focus({preventScroll:true});
+  };
+  if ($('#avl-reset')) $('#avl-reset').onclick = () => {
+    dispatchSearch = fleetSearch = '';
+    dutyFilter = fleetFilter = 'all';
+    dispatchView = mapPriorityFilter = 'now';
+    dispatchPage = 1;
+    chooseFleetVehicle(null);
+    fitPriorityMap();
+    $('#avl-reset')?.focus({preventScroll:true});
+  };
   if($('#selected-ride-map')) $('#selected-ride-map').onclick=fitFocusedRide;
-  if($('#open-dispatch-planning')) $('#open-dispatch-planning').onclick=()=>{$('#dispatch-planning').open=true;};
   if($('#review-attention-rides')) $('#review-attention-rides').onclick=()=>openAttentionRides();
   document.querySelectorAll('[data-dispatch-page]').forEach(b=>b.onclick=()=>{dispatchPage=+b.dataset.dispatchPage;render();});
   document.querySelectorAll('[data-focus-ride]').forEach(b=>{b.onclick=()=>focusDispatchRide(b.dataset.focusRide,!!b.closest('.fleet-inspector'));b.oncontextmenu=e=>{e.preventDefault();openQuickAssign(b.dataset.focusRide,{x:e.clientX,y:e.clientY});};b.onkeydown=e=>{if(e.key==='ContextMenu'||e.shiftKey&&e.key==='F10'){e.preventDefault();const r=b.getBoundingClientRect();openQuickAssign(b.dataset.focusRide,{x:r.left,y:r.top});}};});
@@ -1463,6 +2806,36 @@ function bindActions() {
     try { const result = await api('/api/dispatch/start', {}); await refresh(); toast('Automatic assignment started. Drivers receive offers; remaining rides stay in the queue.'); }
     finally { if ($('#start-auto-dispatch')) $('#start-auto-dispatch').disabled = false; }
   });
+  const backToHistory = $('#back-to-trip-history');
+  if (backToHistory) backToHistory.onclick = () => {
+    const position = customerHistoryReturn;
+    customerHistoryReturn = null;
+    highlightedHistoryRide = position?.id ?? null;
+    tab = 'history';
+    render();
+    if (!position) return;
+    const cardButton = Array.from(document.querySelectorAll('[data-history-ride]'))
+      .find(button => button.dataset.historyRide === position.id);
+    cardButton?.focus({preventScroll:true});
+    window.scrollTo({top:position.top, behavior:'instant'});
+  };
+  document.querySelectorAll('[data-history-ride]').forEach(button => {
+    const openRide = () => {
+      customerHistoryReturn = { id: button.dataset.historyRide, top: window.scrollY };
+      selectedCustomerTrip = button.dataset.historyRide;
+      tab = 'mytrips';
+      render();
+      window.scrollTo(0, 0);
+    };
+    button.onclick = openRide;
+    const card = button.closest('article');
+    card.classList.add('clickable-history-card');
+    card.classList.toggle('returned-history-card', button.dataset.historyRide === highlightedHistoryRide);
+    card.addEventListener('click', event => {
+      if (event.target.closest('button, a, input, select, textarea, label')) return;
+      openRide();
+    });
+  });
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => { const previous=tab;tab = el.dataset.go; render(); if(user.role==='owner'&&previous!==tab) window.scrollTo(0,0);if (tab === 'imports') loadLgtcHistory(); if (tab === 'lgtc-settings') run(loadLgtcSettings); });
   document.querySelectorAll('[data-detail]').forEach(el => el.onclick = () => tripDetail(el.dataset.detail));
   document.querySelectorAll('[data-action]').forEach(el => el.onclick = () => { if (el.disabled) return; confirmAction(el.dataset.trip, el.dataset.action, el.dataset.offer); });
@@ -1484,7 +2857,7 @@ function bindActions() {
       });
       batch = (await api('/api/import/preview', { filename: file.name, base64 })).batch;
       lgtcUpload = batch.kind === 'lgtc' ? { filename: file.name, base64 } : null;
-      if (lgtcUpload) { lgtcSelect(batch.dates[0]); render(); $('#lgtc-review')?.scrollIntoView({block:'start'}); }
+      if (lgtcUpload) { tab = 'imports'; lgtcSelect(batch.dates[0]); render(); $('#lgtc-review')?.scrollIntoView({block:'start'}); }
       else await refresh();
       toast(batch.rows.length + ' rows read from ' + file.name + '. Review the preview before saving.');
     } catch (error) {
@@ -1510,7 +2883,7 @@ function bookModal() {
   const enterCustomer = user.role === 'owner' && !config.publicDemo;
   modal(`<h2>${user.role==='owner'?'Add a planned ride':'Plan your next trip.'}</h2><p>${config.mode==='pilot'?'Choose verified stops for this ride.':'Choose a demo location. Dispatch will arrange your driver.'}</p><form id="booking-form">${enterCustomer?'<label>Customer name<input id="book-customer-name" required maxlength="100"></label><label>Customer mobile<input id="book-customer-phone" type="tel" required placeholder="+15550102001"></label>':''}<label>Pickup<select id="book-pickup">${options}</select></label><label>Destination<select id="book-destination">${options}</select></label><label>Pickup date & time<input id="book-time" type="datetime-local" required value="${dt.toISOString().slice(0, 16)}"></label><p class="help">Time zone: ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}</p><div class="form-grid"><label>Passengers<select id="book-passengers">${[1, 2, 3, 4, 5, 6, 7].map(n => `<option>${n}</option>`).join('')}</select></label><label>Vehicle needs<select id="book-requirements"><option value="">Standard</option><option value="wheelchair">Wheelchair access</option></select></label></div><button class="btn primary full">${user.role==='owner'?'Save planned ride':'Request planned trip'}</button></form>`);
   $('#book-destination').selectedIndex = 1;
-  const bookingKey = crypto.randomUUID();
+  const bookingKey = requestId();
   $('#booking-form').onsubmit = e => {
     e.preventDefault();
     run(async () => {
@@ -1590,7 +2963,7 @@ function drawPriorityMarkers(){
 function fitPriorityMap(){if(!geoMap)return;const points=mapPriorityData().groups.map(g=>[g.lat,g.lng]);if(points.length)geoMap.fitBounds(points,{padding:[55,55],maxZoom:15,animate:false});else toast('No mapped priority rides in this fleet and filter.');}
 
 function openAttentionRides(page=1) {
- const now=Date.now(), rides=queueFor(fleetSource,now).attention, pageSize=6;
+ const now=lastSnapshotAt || Date.now(), rides=queueFor(fleetSource,now).attention, pageSize=6;
  const pages=Math.max(1,Math.ceil(rides.length/pageSize));
  page=Math.min(page,pages);
  modal('<h2>Rides needing attention</h2><p>'+rides.length+' '+(rides.length===1?'ride needs':'rides need')+' review in this fleet.</p>'+
@@ -1629,6 +3002,7 @@ async function openQuickAssign(tripId,anchor,back){
  menu.className='quick-assign';
  menu.setAttribute('aria-label','Review pickup drivers');
  document.body.append(menu);
+ const lookup = new AbortController();
  const position=()=>{
   const r=menu.getBoundingClientRect();
   menu.style.left=Math.max(12,Math.min(anchor?.x??(innerWidth-r.width)/2,innerWidth-r.width-12))+'px';
@@ -1639,6 +3013,7 @@ async function openQuickAssign(tripId,anchor,back){
  const footer='<footer>'+(back?'<button class="text-btn" id="quick-back">Back to attention rides</button>':'')+'<button class="text-btn" id="quick-refresh">Refresh ETAs</button></footer>';
  const paint=html=>{
   menu.innerHTML=html;
+  accentFirstPopupCard(menu);
   menu.querySelector('#quick-close').onclick=close;
   const refreshButton=menu.querySelector('#quick-refresh');
   if(refreshButton) refreshButton.onclick=()=>openQuickAssign(tripId,anchor,back);
@@ -1646,7 +3021,7 @@ async function openQuickAssign(tripId,anchor,back){
   if(backButton) backButton.onclick=()=>{close();back();};
   position();
  };
- menu.onclose=()=>menu.remove();
+ menu.onclose=()=>{lookup.abort();menu.remove();};
  menu.onclick=e=>{
   if(e.target!==menu) return;
   const r=menu.getBoundingClientRect();
@@ -1654,8 +3029,9 @@ async function openQuickAssign(tripId,anchor,back){
  };
  menu.showModal();
  paint(header('Review pickup drivers')+'<p role="status">Checking live availability and pickup ETAs…</p>');
+ const timeout = setTimeout(()=>lookup.abort(),10000);
  try {
-  const r=await api('/api/trips/'+tripId+'/dispatch-review');
+  const r=await api('/api/trips/'+tripId+'/dispatch-review',undefined,undefined,lookup.signal);
   if(!menu.isConnected) return;
   const t=state.trips.find(ride=>ride.id===tripId);
   if(!t) throw Error('This ride is no longer available in the queue.');
@@ -1664,15 +3040,15 @@ async function openQuickAssign(tripId,anchor,back){
   const pending=r.pending?'<p class="quick-recovery">Waiting for '+esc(r.pending.driverName||'a driver')+'. Sending a new offer replaces the current offer.</p>':'';
   const noCandidates='<p class="notice">No suitable driver can take this pickup right now.</p><div class="quick-unavailable">'+r.recoveryCandidates.slice(0,4).map(c=>'<p><strong>'+esc(c.name)+'</strong><small>'+esc(c.reasons.join(' · '))+'</small></p>').join('')+'</div>';
   const options=nearest?quickDriverCard(nearest,r.pickupAt,true)+
-   (others.length?'<details class="quick-alternatives"><summary>2 · Compare other available drivers ('+others.length+')</summary>'+others.map(c=>quickDriverCard(c,r.pickupAt,false)).join('')+'</details>':'<p class="help">No other suitable drivers are available.</p>'):noCandidates;
-  paint(header('Review pickup drivers',r.reference)+'<p class="quick-route"><strong>'+esc(t.pickup)+'</strong><br>Scheduled '+date(r.pickupAt)+' '+time(r.pickupAt)+' · '+t.passengers+' passenger(s)</p>'+
+   (others.length?'<details class="quick-alternatives"><summary>Other available drivers ('+others.length+')</summary>'+others.map(c=>quickDriverCard(c,r.pickupAt,false)).join('')+'</details>':'<p class="help">No other suitable drivers are available.</p>'):noCandidates;
+  paint(header('Review pickup drivers',r.reference)+'<p class="quick-route"><strong>'+esc(t.pickup)+'</strong><br>Pickup '+date(r.pickupAt)+' '+time(r.pickupAt)+' · '+t.passengers+' passenger(s)</p>'+
    (blocked?'<p class="notice">'+esc(blocked)+'</p>':pending+options+
-   '<p class="help">'+(r.etaSource==='road'?'Road ETAs':'Simulated ETAs')+' checked at '+time(r.at)+'. The driver has 45 seconds to accept. A decline or timeout moves the offer to the next suitable available driver.</p>')+
+   '<details class="quick-alternatives"><summary>How offers work</summary><p>'+(r.etaSource==='road'?'Road ETAs':'Simulated ETAs')+' checked at '+time(r.at)+'. Drivers have 45 seconds to accept. Dispatch tries the next eligible driver after a decline or timeout.</p></details>')+
    '<p id="quick-error" class="validation-error" role="alert"></p>'+footer);
   menu.querySelectorAll('[data-quick-driver]').forEach(button=>button.onclick=async()=>{
    menu.querySelectorAll('button').forEach(control=>control.disabled=true);
    try {
-    await api('/api/trips/'+tripId+'/action',{action:'manual_offer',driverId:button.dataset.quickDriver,recovery:true,reason:'Owner reviewed availability'},crypto.randomUUID());
+    await api('/api/trips/'+tripId+'/action',{action:'manual_offer',driverId:button.dataset.quickDriver,recovery:true,reason:'Owner reviewed availability'},requestId());
    } catch (e) {
     if(menu.isConnected){
      menu.querySelector('#quick-error').textContent=e.message;
@@ -1685,13 +3061,13 @@ async function openQuickAssign(tripId,anchor,back){
    await run(refresh);
   });
  } catch(e) {
-  if(menu.isConnected) paint(header('Could not load drivers')+'<p>'+esc(e.message)+'</p>'+footer);
- }
+  if(menu.isConnected) paint(header('Could not load drivers')+'<p>'+esc(lookup.signal.aborted?'The driver lookup timed out. Select Refresh ETAs to try again.':e.message)+'</p>'+footer);
+ } finally { clearTimeout(timeout); }
 }
 
 function dispatchIndicator() {
   const h=state.dispatchHealth, routing=h?.routing;
-  let label = !connected ? (connectionMode==='checking'?'Dispatch status refreshing':'Dispatch connection interrupted') : h?.lastError ? 'Dispatch needs attention' : 'Demo dispatch';
+  let label = !connected ? 'Dispatch connection interrupted' : h?.lastError ? 'Dispatch needs attention' : 'Demo dispatch';
   if (connected && !h?.lastError && routing?.mode==='road') label = routing.status==='blocked' ? 'Road routing needs attention' :
     routing.status==='ready' ? 'Road ETA dispatch' : 'Waiting for road ETAs';
   const healthy = connected && h?.lastSuccessAt && Date.now()-h.lastSuccessAt<15000 && !h.lastError && routing?.status!=='blocked';
@@ -1723,20 +3099,96 @@ async function showVolumeData(page=1,search='',status=''){
 
 function regularDriverModal(id){const t=state.trips.find(t=>t.id===id),drivers=state.drivers.filter(d=>(d.demoRunId||null)===(t.demoRunId||null));modal('<h2>Regular customer driver</h2><p>'+esc(t.customerName)+' · '+esc(t.customerPhone)+'</p><label>Try this driver first<select id="regular-driver-choice"><option value="">'+(t.lgtc?'Use customer default':'No regular driver')+'</option>'+drivers.map(d=>'<option value="'+esc(d.id)+'" '+(t.preferredDriver?.id===d.id?'selected':'')+'>'+esc(d.name)+' · '+d.seats+' seats</option>').join('')+'</select></label><div class="notice">If this driver is unavailable, unsuitable, declines or times out, offer the closest suitable available driver by pickup ETA. Driver acceptance is always required.</div><p class="help">'+(t.lgtc?'Applies to LGTC bookings for this rider. Use customer default to clear the LGTC override.':'Applies to future offers for this mobile number in this fleet.')+' Existing reservations, offers already sent and confirmed assignments are kept.</p><button class="btn primary" id="save-regular-driver">Save regular driver</button>');$('#save-regular-driver').onclick=()=>run(async()=>{await api('/api/customer-preference',{tripId:id,driverId:$('#regular-driver-choice').value||null});$('#modal').close();await refresh();toast('Regular driver saved. Automatic fallback is enabled.');});}
 
+const ownerGroups = [
+ ['Transport',[['overview','Live Fleet'],['trips','Trips'],['trip-sources','Trip Sources'],['imports','Route Workbench'],['schedule','Upcoming rides'],['readiness','Pickup readiness']]],
+ ['Activity',[['reports','Reports'],['activity','Activity log'],['messages','Customer updates'],['help','Support requests']]],
+ ['Users & fleet',[['shifts','Schedule Management'],['drivers','Drivers & vehicles'],['customers','Regular riders']]],
+ ['Settings',[['settings','Dispatch settings'],['fleet-import','Fleet data upload'],['lgtc-settings','LGTC dispatch settings'],['manage','Operations tools']]],
+];
+let ownerMenuOpen = !matchMedia('(max-width: 600px)').matches;
+let ownerMenuGroup;
+function ownerPageHeading(title, description, actions = '') {
+  return '<section class="owner-page-heading"><div><h1>' + title + '</h1><p>' + description +
+    '</p></div>' + (actions ? '<div class="heading-actions">' + actions + '</div>' : '') + '</section>';
+}
 function ownerShell(content,retainedMap){
  const dutyScroll = $('#driver-duty-roster')?.scrollTop || 0;
- const section=['overview','fleet'].includes(tab)?'overview':['trips','schedule','imports'].includes(tab)?'trips':'manage';
- const back=section==='manage'&&tab!=='manage'?'<button class="manage-back text-btn" data-go="manage">← Manage</button>':section==='trips'&&tab!=='trips'?'<button class="manage-back text-btn" data-go="trips">← Bookings</button>':'';
- $('#app').innerHTML='<a class="skip-link" href="#main-content">Skip to main content</a><div class="simple-owner role-owner"><header class="owner-header"><a href="/" class="brand" data-owner-nav="overview">'+icon('bolt')+' ProLift</a><nav aria-label="Main navigation">'+[['overview','Dispatch'],['manage','Manage']].map(([id,label])=>'<button data-owner-nav="'+id+'" class="'+(section===id||section==='trips'&&id==='overview'?'selected':'')+'" '+(section===id?'aria-current="page"':'')+'>'+label+'</button>').join('')+'</nav><div class="owner-account"><span class="owner-demo">'+(config.mode==='pilot'?'ROAD PILOT':'LOCAL DEMO')+'</span><span id="connection" class="connection">'+(connected?'Connected':'Reconnecting…')+'</span><button class="icon-btn" id="logout" aria-label="Sign out">'+icon('logout')+'</button></div></header><main id="main-content" tabindex="-1"><div class="page-content '+(tab==='overview'?'fleet-home':'')+'">'+(tab==='trips'?'<button class="manage-back text-btn" data-go="overview">← Dispatch</button>':'')+back+content+'</div></main></div><dialog id="modal"></dialog>';
- document.querySelectorAll('[data-owner-nav]').forEach(b=>b.onclick=e=>{e.preventDefault();tab=b.dataset.ownerNav;search='';filter='all';boardPage=1;render();window.scrollTo(0,0);});
- $('#logout').onclick=()=>run(async()=>{await api('/api/logout',{});stopConnection();user=null;codeSent=false;batch=null;lgtcUpload=null;lgtcApprovalSource=null;lgtcHistory=null;lgtcDraft=null;state=null;if(config.mode==='pilot')config=await api('/api/config');renderLogin();});
+ const current = tab === 'fleet' ? 'overview' : tab;
+ const group = ownerGroups.find(([,items])=>items.some(([id])=>id===current));
+ const menu = ownerGroups.map(([name,items])=>'<details data-owner-group="'+esc(name)+'"'+
+   ((ownerMenuGroup ?? group?.[0])===name?' open':'')+'><summary>'+esc(name)+'</summary>'+
+   items.map(([id,label])=>'<button type="button" data-owner-nav="'+id+'"'+
+     (current===id?' aria-current="page"':'')+'>'+esc(label)+'</button>').join('')+'</details>').join('');
+ $('#app').innerHTML='<a class="skip-link" href="#main-content">Skip to main content</a><div class="simple-owner role-owner owner-portal">'+
+   '<aside class="owner-sidebar"><button type="button" id="owner-menu-toggle" aria-label="Toggle navigation" aria-controls="owner-navigation" aria-expanded="'+ownerMenuOpen+'">☰</button>'+
+   '<nav id="owner-navigation" aria-label="Main navigation"'+(ownerMenuOpen?'':' hidden')+'><button class="owner-sidebar-brand" data-owner-nav="overview">RoyalCab</button>'+menu+'</nav></aside>'+
+   '<div class="owner-portal-content"><header class="owner-portal-bar"><span>'+esc(group?.[0]||'RoyalCab')+' / <strong>'+
+   esc(group?.[1].find(([id])=>id===current)?.[1]||'Owner workspace')+'</strong></span><div class="owner-account"><span id="connection" class="connection">'+
+   (connected?'Connected':'Reconnecting…')+'</span><button class="icon-btn" id="logout" aria-label="Sign out">'+icon('logout')+'</button></div></header>'+
+   '<main id="main-content" tabindex="-1"><div class="page-content '+(tab==='overview'?'fleet-home':'')+'">'+content+'</div></main></div></div><dialog id="modal"></dialog>';
+ $('#owner-menu-toggle').onclick=()=>{
+   ownerMenuOpen=!ownerMenuOpen;
+   $('#owner-navigation').hidden=!ownerMenuOpen;
+   $('#owner-menu-toggle').setAttribute('aria-expanded',String(ownerMenuOpen));
+   requestAnimationFrame(()=>geoMap?.invalidateSize());
+ };
+ document.querySelectorAll('[data-owner-group]').forEach(item=>item.querySelector('summary').onclick=event=>{
+   event.preventDefault();
+   ownerMenuGroup=item.open?'':item.dataset.ownerGroup;
+   for(const sibling of document.querySelectorAll('[data-owner-group]')) sibling.open=sibling.dataset.ownerGroup===ownerMenuGroup;
+ });
+ document.querySelectorAll('[data-owner-nav]').forEach(button=>button.onclick=()=>{
+   tab=button.dataset.ownerNav;
+   ownerMenuGroup=undefined;
+   if(matchMedia('(max-width: 760px)').matches) ownerMenuOpen=false;
+   search=''; filter='all'; boardPage=1;
+   render();
+   if(['imports','trip-sources'].includes(tab)) loadLgtcHistory();
+   if(tab==='lgtc-settings') run(loadLgtcSettings);
+   window.scrollTo(0,0);
+ });
+
  const node=$('#geo-fleet-map');if(retainedMap&&node&&geoMap)node.replaceWith(retainedMap);else if(geoMap){geoMap.remove();geoMap=null;geoMarkers=null;}bindActions();
  if ($('#driver-duty-roster')) $('#driver-duty-roster').scrollTop = dutyScroll;
 }
-function managePage(){return '<section class="simple-page-head"><div><h1>Manage</h1><p>Your team, customers and business settings.</p></div></section><div class="manage-grid">'+[['drivers','car','Drivers & cars','Availability, vehicles and passenger seats'],['customers','users','Regular customers','Save preferred drivers and fallback'],['lgtc-settings','upload','LGTC dispatch settings','Predefine regular drivers and day plans'],['reports','grid','Reports','Driver and vehicle activity'],['settings','clock','Settings','Pickup timing and customer reminders']].map(([id,i,title,detail])=>'<button class="manage-card" data-go="'+id+'"><span class="manage-card-icon">'+icon(i)+'</span><strong>'+title+'</strong><small>'+detail+'</small>'+icon('arrow')+'</button>').join('')+'</div><div class="manage-links"><button class="text-btn" data-go="help">Support requests</button><button class="text-btn" data-go="messages">Customer updates</button><button class="text-btn" data-go="activity">Activity log</button></div>' + (config.mode==='pilot'?'':'<details class="manage-advanced"><summary>Test data & tools</summary><div><label>Fleet data<select id="dispatch-source" aria-label="Fleet data source">'+[['device','Phone GPS'],['sample','Sample fleet'],['scenario','Charlotte test fleet'],['replay','GPS replay'],['volume','500-trip dataset']].map(([id,label])=>'<option value="'+id+'" '+(fleetSource===id?'selected':'')+'>'+label+'</option>').join('')+'</select></label><button class="btn" id="manage-demo">Watch auto dispatch</button><button class="btn" id="manage-volume">Browse 500 test trips</button><button class="btn" id="dispatch-more">More test tools</button></div></details>');}
+function managePage(){return '<section class="simple-page-head"><div><h1>Operations tools</h1><p>Your team, customers and business settings.</p></div></section><div class="manage-grid">'+[['drivers','car','Drivers & cars','Availability, vehicles and passenger seats'],['customers','users','Regular customers','Save preferred drivers and fallback'],['lgtc-settings','upload','LGTC dispatch settings','Predefine regular drivers and day plans'],['reports','grid','Reports','Driver and vehicle activity'],['settings','clock','Settings','Pickup timing and customer reminders']].map(([id,i,title,detail])=>'<button class="manage-card" data-go="'+id+'"><span class="manage-card-icon">'+icon(i)+'</span><strong>'+title+'</strong><small>'+detail+'</small>'+icon('arrow')+'</button>').join('')+'</div><div class="manage-links"><button class="text-btn" data-go="help">Support requests</button><button class="text-btn" data-go="messages">Customer updates</button><button class="text-btn" data-go="activity">Activity log</button></div>' + (config.mode==='pilot'?'':'<details class="manage-advanced"><summary>Test data & tools</summary><div><label>Fleet data<select id="dispatch-source" aria-label="Fleet data source">'+[['device','Phone GPS'],['sample','Sample fleet'],['scenario','Charlotte test fleet'],['replay','GPS replay'],['volume','500-trip dataset']].map(([id,label])=>'<option value="'+id+'" '+(fleetSource===id?'selected':'')+'>'+label+'</option>').join('')+'</select></label><button class="btn" id="manage-demo">Watch auto dispatch</button><button class="btn" id="manage-volume">Browse 500 test trips</button><button class="btn" id="dispatch-more">More test tools</button></div></details>');}
 var regularCustomerSearch='';
 function regularCustomersPage(){
  const groups=new Map();for(const t of state.trips){if(t.isSharedRun||!t.customerPhone)continue;const key=(t.demoRunId||'ordinary')+':'+t.customerPhone,g=groups.get(key);if(g){g.count++;if(t.pickupAt>g.trip.pickupAt)g.trip=t;}else groups.set(key,{trip:t,count:1});}
  const needle=regularCustomerSearch.trim().toLowerCase(),rows=[...groups.values()].filter(g=>needle?[g.trip.customerName,g.trip.customerPhone,g.trip.preferredDriver?.name].join(' ').toLowerCase().includes(needle):g.trip.preferredDriver).sort((a,b)=>a.trip.customerName.localeCompare(b.trip.customerName));
- return '<section class="simple-page-head"><div><h1>Regular customers</h1><p>Find a customer by name or mobile to save their regular driver.</p></div></section><form id="regular-customer-search" class="customer-find"><input id="regular-customer-query" type="search" placeholder="Customer name or mobile" aria-label="Find customer" value="'+esc(regularCustomerSearch)+'"><button class="btn primary">Find customer</button></form><section class="bookings-panel customer-list">'+(rows.length?rows.slice(0,20).map(g=>{const t=g.trip;return '<article><div><strong>'+esc(t.customerName)+(t.demoRunId?' <small>TEST</small>':'')+'</strong><small>'+esc(t.customerPhone)+' · '+g.count+' booking(s)</small></div><div><span>'+esc(t.preferredDriver?.name||'No regular driver')+'</span><button class="btn" data-regular-customer="'+esc(t.id)+'">'+(t.preferredDriver?'Change driver':'Set driver')+'</button></div></article>';}).join(''):'<div class="dispatch-empty"><h3>'+(needle?'No matching customer':'No saved regular customers')+'</h3><p>Search an existing customer to choose their regular driver.</p></div>')+'</section>'+(rows.length>20?'<p class="help">Showing 20 of '+rows.length+' matches. Refine your search to find a specific customer.</p>':'');
+ return '<section class="simple-page-head"><div><h1>Regular riders</h1><p>Find a customer by name or mobile to save their regular driver.</p></div></section><form id="regular-customer-search" class="customer-find"><input id="regular-customer-query" type="search" placeholder="Customer name or mobile" aria-label="Find customer" value="'+esc(regularCustomerSearch)+'"><button class="btn primary">Find customer</button></form><section class="bookings-panel customer-list">'+(rows.length?rows.slice(0,20).map(g=>{const t=g.trip;return '<article><div><strong>'+esc(t.customerName)+(t.demoRunId?' <small>TEST</small>':'')+'</strong><small>'+esc(t.customerPhone)+' · '+g.count+' booking(s)</small></div><div><span>'+esc(t.preferredDriver?.name||'No regular driver')+'</span><button class="btn" data-regular-customer="'+esc(t.id)+'">'+(t.preferredDriver?'Change driver':'Set driver')+'</button></div></article>';}).join(''):'<div class="dispatch-empty"><h3>'+(needle?'No matching customer':'No saved regular customers')+'</h3><p>Search an existing customer to choose their regular driver.</p></div>')+'</section>'+(rows.length>20?'<p class="help">Showing 20 of '+rows.length+' matches. Refine your search to find a specific customer.</p>':'');
 }
+
+
+
+
+
+
+
+window.addEventListener('royalcab-demo-open-ride', event => { if (user?.role === 'owner' && state?.trips.some(trip => trip.id === event.detail)) tripDetail(event.detail); });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

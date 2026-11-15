@@ -37,14 +37,23 @@ function lgtcHistoryView() {
   if (!lgtcHistory) return '<p class="muted">Loading saved schedules…</p>';
   return lgtcHistory.length ? lgtcHistory.map(s => '<div class="activity-row"><div><strong>' + s.summaries.map(d => esc(lgtcDay(d.serviceDate))).join(' · ') + '</strong><small>' + s.summaries.reduce((n,d)=>n+d.count,0) + ' rides · Saved ' + esc(date(s.savedAt)) + ' at ' + esc(time(s.savedAt)) + '</small></div><button class="btn small" data-lgtc-open="' + esc(s.id) + '">Open schedule</button></div>').join('') : '<p class="muted">No LGTC schedules saved yet.</p>';
 }
+let latestLgtcSchedule, latestLgtcPlan;
 function lgtcHandoff() {
-  const schedule = lgtcHistory?.[0];
-  if (!schedule) return '';
-  const latest = schedule.summaries.at(-1);
-  const legs = schedule.summaries.reduce((total, day) => total + day.count, 0);
-  return '<aside class="planning-handoff"><div><strong>LGTC planning</strong><p>' + legs + ' rides · ' +
-    esc(lgtcDay(latest.serviceDate)) + ' · Planning only</p></div><button class="btn small" data-lgtc-open="' +
-    esc(schedule.id) + '">Review schedule</button></aside>';
+  const schedule=lgtcHistory?.[0];
+  if(!schedule)return '';
+  const day=schedule.summaries.at(-1);
+  const draft=latestLgtcSchedule?.id===schedule.id?latestLgtcSchedule.drafts?.[day.serviceDate]:null;
+  const dispatched=new Set(state.trips.filter(t=>t.lgtc?.serviceDate===day.serviceDate).map(t=>t.reference));
+  const plan=draft&&!draft.stale?latestLgtcPlan:null;
+  const planned=plan?.runs.flatMap(run=>run.trips)||[];
+  const ready=planned.filter(ride=>!dispatched.has('LGTC-'+ride.program+'-'+day.serviceDate+'-'+ride.reference)).length;
+  const summary=plan
+    ? '<p><strong>'+ready+'</strong> ready for dispatch · <strong>'+plan.unplanned.length+'</strong> need review'+
+      (planned.length>ready?' · '+(planned.length-ready)+' released':'')+'</p>'
+    : '<p>Build or refresh the day plan to see readiness counts.</p>';
+  return '<section class="planning-handoff panel"><div><h2>LGTC day plan</h2><p>'+
+    esc(lgtcDay(day.serviceDate))+'</p>'+summary+'</div><button class="btn primary" data-lgtc-open="'+
+    esc(schedule.id)+'">Review schedule</button></section>';
 }
 function lgtcRows(rows) {
   const dispatched = new Map((state?.trips || []).filter(t=>t.lgtc).map(t=>[t.reference,t]));
@@ -505,11 +514,12 @@ function openLgtcDispatchApproval() {
   });
   form.onsubmit = async event => {
     event.preventDefault();
-    check.disabled = input.disabled = true;
+    const file = input.files?.[0];
+    check.disabled = true;
+    input.disabled = true;
     error.textContent = '';
     output.innerHTML = '';
     try {
-      const file = input.files[0];
       if (file?.size > 5*1024*1024) throw Error('Choose a file that is 5 MB or smaller.');
       const base64 = file ? await new Promise((resolve,reject) => {
         const reader = new FileReader();
@@ -518,7 +528,16 @@ function openLgtcDispatchApproval() {
         reader.readAsDataURL(file);
       }) : readySource?.base64;
       const params = { id, serviceDate, revision, filename:file?.name || readySource?.filename, base64 };
-      const preview = await api('/api/lgtc/dispatch', { ...params, action:'preview' });
+      if (!base64) throw Error('Select the original LGTC workbook before checking rides.');
+      let preview;
+      try {
+        preview = await api('/api/lgtc/dispatch', { ...params, action:'preview' });
+      } catch (err) {
+        if (err.message === 'Choose the original file for this saved schedule.') {
+          throw Error(params.filename + ' does not match this saved schedule. Select the exact workbook used to create it.');
+        }
+        throw err;
+      }
       if (!output.isConnected) return;
       const list = preview.ready.map(row=>'<li><strong>' + esc(row.reference) + '</strong> · ' +
         esc(clock.format(row.pickupAt) + ' ET · ' + row.pickup + ' → ' + row.destination + ' · ' + row.driver) + '</li>').join('');
@@ -552,6 +571,16 @@ async function loadLgtcHistory() {
     const schedules = (await api('/api/lgtc/schedules')).schedules;
     if (user?.role !== 'owner') return;
     lgtcHistory = schedules;
+    if(schedules.length){
+      const result=await api('/api/lgtc/schedules?id='+encodeURIComponent(schedules[0].id));
+      if(user?.role!=='owner'||lgtcHistory!==schedules)return;
+      const day=schedules[0].summaries.at(-1).serviceDate;
+      const draft=result.batch.drafts?.[day];
+      const reopened=draft&&!draft.stale?await api('/api/lgtc/plan',{id:schedules[0].id,serviceDate:day,reopen:true}):null;
+      if(user?.role!=='owner'||lgtcHistory!==schedules)return;
+      latestLgtcSchedule=result.batch;
+      latestLgtcPlan=reopened?.plan;
+    }else latestLgtcSchedule=null;
     if (config.sheetOnly && tab === 'imports' && !batch && schedules.length) {
       const result = await api('/api/lgtc/schedules?id=' + encodeURIComponent(schedules[0].id));
       if (user?.role !== 'owner' || tab !== 'imports' || batch) return;

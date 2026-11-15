@@ -1,6 +1,9 @@
 (function(root) {
   function attentionReason(trip, now = Date.now(), leadMinutes = 15) {
     if (trip.poolParentId || ['completed','cancelled'].includes(trip.status)) return '';
+    if (!trip.driverId && trip.dispatchError?.startsWith('Pickup missed:')) return trip.dispatchError;
+    if (!trip.driverId && trip.autoDispatch && !trip.willCall && !trip.dispatchPaused &&
+        now>=trip.pickupAt && now<trip.pickupAt+15*60000) return '';
     if (trip.reservationIssue) return 'Reserved driver unavailable';
     if (trip.redFlag) return 'Driver replacement needed';
     if (trip.dispatchExhausted) return 'Driver search exhausted';
@@ -69,7 +72,7 @@
     const list = trips.filter(t => scope==='all'||(scope==='live'?!t.demoRunId:t.demoRunId===scope));
     const counts = { all: list.length, waiting: 0, offered: 0, assigned: 0, attention: 0, completed: 0, cancelled: 0 };
     for (const t of list) counts[group(t, now,leadMinutes)]++;
-    const found = searchTrips(list,search,drivers).filter(t => (order !== 'past' || t.pickupAt < now) && (filter === 'all' || group(t, now,leadMinutes) === filter))
+    const found = searchTrips(list,search,drivers).filter(t => (order !== 'past' || t.pickupAt < now) && (filter === 'all' || (filter === 'upcoming' ? t.pickupAt >= now && !t.willCall && !['completed','cancelled','arrived','onboard'].includes(t.status) : group(t, now,leadMinutes) === filter)))
       .sort((a,b)=>compareBookings(a,b,order,now));
     const pages = Math.max(1, Math.ceil(found.length / pageSize)), current = Math.min(pages, Math.max(1, page));
     return { counts, total: found.length, pages, page: current, start: found.length ? (current - 1) * pageSize + 1 : 0,

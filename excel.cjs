@@ -26,7 +26,7 @@ function unzip(buf) {
     const name = buf.subarray(pos + 46, pos + 46 + len).toString(); pos += 46 + len + extra + comment;
     total += rawSize;
     if (flags & 1 || total > 20 * 1024 * 1024 || size > 5 * 1024 * 1024) throw new Error('Encrypted or oversized workbook');
-    if (!/^xl\/(sharedStrings\.xml|worksheets\/sheet1\.xml)$/.test(name)) continue;
+    if (!/^xl\/(sharedStrings\.xml|worksheets\/sheet[12]\.xml)$/.test(name)) continue;
     if (buf.readUInt32LE(off) !== 0x04034b50) throw new Error('Invalid workbook entry');
     const start = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28);
     const packed = buf.subarray(start, start + size);
@@ -37,11 +37,11 @@ function unzip(buf) {
   }
   return files;
 }
-function xlsx(buf) {
-  const files = unzip(buf), sheet = files['xl/worksheets/sheet1.xml'];
+function xlsx(buf, sheetNumber = 1) {
+  const files = unzip(buf); const sheet = files['xl/worksheets/sheet'+sheetNumber+'.xml']?.replace(/(<\/?)[\w.-]+:/g,'$1');
   if (!sheet) throw new Error('Use the template: data must be on the first worksheet');
   const texts = s => [...s.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map(m => xml(m[1])).join('');
-  const strings = [...(files['xl/sharedStrings.xml'] || '').matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(m => texts(m[1]));
+  const strings = [...(files['xl/sharedStrings.xml'] || '').replace(/(<\/?)[\w.-]+:/g,'$1').matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map(m => texts(m[1]));
   const rows = [];
   for (const match of sheet.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
     const row = [];
@@ -90,3 +90,4 @@ function workbook(rows) {
   return Buffer.concat([...locals, directory, end]);
 }
 module.exports = { parseFile, workbook, xlsx };
+

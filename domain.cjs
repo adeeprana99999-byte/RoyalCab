@@ -32,8 +32,8 @@ function seed(now = Date.now(),initialSettings={}) {
   const trips = [trip('PL-1001', 'Alex Morgan', '+15550102001', 0, 1, 30), trip('PL-1002', 'Jordan Lee', '+15550102002', 2, 3, 75), trip('PL-1003', 'Taylor Brooks', '+15550102003', 4, 0, 55), trip('PL-1004', 'Casey Evans', '+15550102004', 5, 1, 50, { requirements: ['wheelchair'] })];
   return { settings:{...Operations.defaults,...initialSettings},customerMessages:[],assignmentHistory:[],drivers, trips, offers: [], events: [], imports: [], customers: [{ phone: '+15550102001', name: 'Alex Morgan' }], notifications: [], revision: 0 };
 }
-function event(s, type, trip, actor, detail = '') {
-  const e = { id: id('evt'), type, tripId: trip?.id, reference: trip?.reference, actor, detail, at: Date.now() };
+function event(s, type, trip, actor, detail = '', at = Date.now()) {
+  const e = { id: id('evt'), type, tripId: trip?.id, reference: trip?.reference, actor, detail, at };
   s.events.unshift(e); s.events = s.events.slice(0, 1000);
   s.notifications.unshift({ ...e, delivery: 'demo-log' }); s.notifications = s.notifications.slice(0, 300);
 }
@@ -42,6 +42,7 @@ function estimate(driver, place) {
   return Math.max(1, Math.ceil(Math.hypot(dx, dy) * 1.25 / 0.5));
 }
 function currentOffers(s, now) { return s.offers.filter(o => o.status === 'pending' && o.expiresAt > now); }
+const missedPickupGrace = 15 * 60000;
 function recoveryAllows(t, driverId, at) {
  return t.recoveryUntil>=at && (t.recoveryDriverIds||[]).includes(driverId);
 }
@@ -56,8 +57,16 @@ function eligibility(s,t,now,ignoreOffer){
   const eta=road?(quote?.minutes ?? null):pickup&&Number.isFinite(d.lat)&&Number.isFinite(d.lng)?estimate(d,pickup):null;
   if(road&&!deviceReady(d,now))reasons.push('Fresh phone GPS required');
   if(!road&&(d.locationSource==='replay'||d.locationSource==='device'&&(!t.lgtc?.test||!d.trackingEnabled)))reasons.push('Real routing connection required');
+  if(d.driverDisabled || d.vehicleDisabled) reasons.push(d.driverDisabled?'Driver disabled':'Vehicle disabled');
+  if(d.documentEligibility){
+    const docs=d.documentEligibility;
+    if(docs.license!=='Approved')reasons.push('Driver license approval required');
+    if(!docs.expiresOn||docs.expiresOn<easternServiceDate.format(Math.max(now,t.pickupAt||now)))reasons.push('Current driver license required');
+    if(docs.contract!=='Approved')reasons.push('Driver contract approval required');
+  }
   if(d.status!=='online')reasons.push(d.status==='busy'?'On another ride':'Offline');
-  const shift = d.availability && Number.isFinite(t.pickupAt) ? d.availability[easternServiceDate.format(t.pickupAt)] : null;
+  const shift = Number.isFinite(t.pickupAt) ? require('./lgtc.cjs').driverShift(d,easternServiceDate.format(t.pickupAt)) : null;
+  if ((d.rosterManaged || d.rosterServiceDate) && !shift) reasons.push('No driver shift confirmed for this date');
   if (shift?.unavailable || shift && (Math.max(t.pickupAt,now) < shift.startAt || Math.max(t.pickupAt,now) >= shift.endAt ||
       (t.plannedPickupAt === t.pickupAt && t.plannedEndAt > shift.endAt))) reasons.push('Outside the driver’s scheduled hours');
   if(!road&&(!Number.isFinite(d.lastLocationAt)||now-d.lastLocationAt>120000||now<d.lastLocationAt||eta===null))reasons.push('Fresh location required');
@@ -71,7 +80,7 @@ function eligibility(s,t,now,ignoreOffer){
   if(Reservations.resourceBusy(s,d))reasons.push('Vehicle is on another ride');
   const recovery=recoveryAllows(t,d.id,now);
   if(pickup&&destination&&Reservations.conflicts(s,d,recovery?{...t,pickupAt:Math.max(t.pickupAt,now+(eta||0)*60000)}:t,catalog,now))reasons.push('Would overlap a reserved pickup');
-  if(!recovery&&eta!==null&&now+eta*60000>t.pickupAt+5*60000)reasons.push('Cannot reach pickup within the arrival tolerance');
+  if(!recovery&&eta!==null&&now+eta*60000>(t.autoDispatch&&!t.willCall&&now>=t.pickupAt?t.pickupAt+missedPickupGrace:t.pickupAt+5*60000))reasons.push('Cannot reach pickup within the arrival tolerance');
   const roadPending=!!(road&&!quote&&!reasons.length);
   if(road&&!quote)reasons.push('Waiting for a verified road ETA');
   else if(road&&eta===null)reasons.push('No road route to pickup');
@@ -89,14 +98,17 @@ function regularDriver(s,t){
  const ids=[...new Set(members.map(x=>s.lgtcRegularDrivers?.get(x.id)||
    s.customerPreferences?.[(x.demoRunId||'ordinary')+':'+x.customerPhone]?.driverId).filter(Boolean))];return ids.length===1?ids[0]:null;
 }
-function eligible(s,t,now,ignoreOffer){
- const regular=regularDriver(s,t), planned=t.plannedPickupAt===t.pickupAt?t.plannedDriverId:null;
+function pairedDriver(s,t){
  const paired=t.lgtc?.pairedReference && s.trips.find(ride =>
    ride.customerPhone === t.customerPhone && ride.lgtc?.reference === t.lgtc.pairedReference &&
    ride.lgtc?.pairedReference === t.lgtc.reference && ride.lgtc.program === t.lgtc.program &&
    ride.lgtc.serviceDate === t.lgtc.serviceDate &&
    ['accepted','heading_to_pickup','arrived','onboard','completed'].includes(ride.status));
- const priority=[t.reservedDriverId,paired?.driverId,regular||planned];
+ return paired?.driverId;
+}
+function eligible(s,t,now,ignoreOffer){
+ const regular=regularDriver(s,t), planned=t.plannedPickupAt===t.pickupAt?t.plannedDriverId:null;
+ const priority=[t.reservedDriverId,pairedDriver(s,t),regular||planned];
  return eligibility(s,t,now,ignoreOffer).filter(x=>x.eligible).sort((a,b)=>{
   for (const id of priority) {
    const diff=Number(b.driver.id===id)-Number(a.driver.id===id);
@@ -106,6 +118,7 @@ function eligible(s,t,now,ignoreOffer){
  });
 }
 function offer(s, t, actor, now = Date.now(),options={}) {
+  if (t.willCall) throw Error('Confirm the will-call pickup first.');
   if (!['awaiting_driver', 'needs_reassignment'].includes(t.status)) throw new Error('This trip cannot receive an offer now');
   const lead=Operations.settings(s).dispatchLeadMinutes;
   if (t.pickupAt > now + lead * 60000) throw new Error(`This trip is scheduled. Dispatch opens ${lead} minutes before pickup.`);
@@ -122,8 +135,13 @@ function offer(s, t, actor, now = Date.now(),options={}) {
   if (!best) throw new Error('No eligible driver can reach this pickup on time. Check driver availability and location.');
   const created=[],groupId=options.mode==='urgent_group'?id('group'):null,limit=groupId?(options.limit||Operations.settings(s).urgentGroupSize):1;
   for(let i=0;i<limit;i++){
-    const candidate=i===0?best:eligible(s,t,now)[0];if(!candidate)break;
-    const o={id:id('offer'),tripId:t.id,driverId:candidate.driver.id,eta:candidate.eta,status:'pending',offeredAt:now,expiresAt:now+45000,attemptNumber:s.offers.filter(o=>o.tripId===t.id).length+1,mode:options.mode||'sequential',groupId,ownerReason:options.reason||null};
+    const ranked=i===0?candidates:eligible(s,t,now);
+    const first=i===0?best:ranked[0];if(!first)break;
+    const hasPriority=first.driver.id===t.reservedDriverId||first.driver.id===regularDriver(s,t)||
+      (t.plannedPickupAt===t.pickupAt&&first.driver.id===t.plannedDriverId)||first.driver.id===pairedDriver(s,t);
+    const tied=options.driverId||hasPriority?[first]:ranked.filter(x=>x.eta===first.eta);
+    const candidate=tied.length===1?tied[0]:tied[require('node:crypto').randomInt(tied.length)];
+    const o={id:id('offer'),tripId:t.id,driverId:candidate.driver.id,eta:candidate.eta,status:'pending',offeredAt:now,expiresAt:t.autoDispatch&&!['manual','recovery_sequential'].includes(options.mode)&&now>=t.pickupAt?Math.min(now+45000,t.pickupAt+missedPickupGrace):now+45000,attemptNumber:s.offers.filter(o=>o.tripId===t.id).length+1,mode:options.mode||'sequential',groupId,ownerReason:options.reason||null};
     o.etaSource = road ? 'road' : 'simulated';
     if(t.demoScenario==='charlotte-fleet'){t.demoCandidateRanking=candidates.map(x=>({driverId:x.driver.id,name:x.driver.name,eta:x.eta}));t.demoAssignmentReason=candidate.driver.name+' was the nearest eligible available driver ('+candidate.eta+' min simulated pickup ETA).';}
     const regular=regularDriver(s,t);
@@ -137,19 +155,29 @@ function offer(s, t, actor, now = Date.now(),options={}) {
   return created[0];
 }
 function dispatchNext(s, t, now = Date.now()) {
+  if(!t.willCall && !(t.recoveryUntil>=now) && now>=t.pickupAt+missedPickupGrace){
+    const reason='Pickup missed: no eligible driver accepted within 15 minutes.'+
+      (t.dispatchError?' Last attempt: '+t.dispatchError:'');
+    t.autoDispatch=false;
+    t.dispatchExhausted=true;
+    t.dispatchError=reason;
+    event(s,'dispatch.missed_pickup',t,'Automatic dispatch',reason,now);
+    return;
+  }
   try {
     const settings=Operations.settings(s),missed=s.offers.some(o=>o.tripId===t.id&&['declined','expired'].includes(o.status));
     const urgent=settings.urgentGroupEnabled&&missed&&t.pickupAt<=now+settings.urgentGroupMinutes*60000;
     const preferred=regularDriver(s,t),firstRegularOffer=preferred&&eligible(s,t,now).some(x=>x.driver.id===preferred)&&!s.offers.some(o=>o.tripId===t.id&&o.driverId===preferred);
-    const mode=t.recoveryUntil>=now?'recovery_sequential':urgent&&!firstRegularOffer?'urgent_group':'sequential';
-    offer(s,t,'Automatic dispatch',now,{mode}); t.dispatchError='';
+    const late=now>=t.pickupAt&&!(t.recoveryUntil>=now);
+    const mode=late?'urgent_group':t.recoveryUntil>=now?'recovery_sequential':urgent&&!firstRegularOffer?'urgent_group':'sequential';
+    offer(s,t,'Automatic dispatch',now,{mode,...(late&&{limit:s.drivers.length})}); t.dispatchError='';
   }
   catch(e) {
     if (e.code === 'ROAD_PENDING') { t.dispatchError=''; t.retryAt=now+6000; return; }
     t.dispatchError=e.message;
     const remaining=eligible(s,{...t,excluded:[]},now);
     const attempted=s.offers.some(o=>o.tripId===t.id && ['declined','expired','invalidated'].includes(o.status));
-    if (attempted && remaining.every(({driver})=>t.excluded.includes(driver.id))) {
+    if (now<t.pickupAt && attempted && remaining.every(({driver})=>t.excluded.includes(driver.id))) {
       if (!t.dispatchExhausted) event(s,'dispatch.exhausted',t,'Automatic dispatch','No remaining eligible driver. All currently available suitable candidates have been tried or are unavailable. Owner review required.');
       t.dispatchExhausted=true;
       t.dispatchError='No remaining eligible driver. Review driver availability or retry the search.';
@@ -179,7 +207,7 @@ function tick(s, now = Date.now()) {
     d.lastLocationAt = now; changed = true;
   }
   // Failed/no-driver attempts back off and survive restarts in persisted state.
-  for (const t of [...s.trips].sort((a, b) => a.pickupAt - b.pickupAt)) if (t.autoDispatch && ['awaiting_driver', 'needs_reassignment'].includes(t.status) && t.pickupAt <= now + Operations.settings(s).dispatchLeadMinutes * 60000 && (t.retryAt || 0) <= now) {
+  for (const t of [...s.trips].sort((a, b) => a.pickupAt - b.pickupAt)) if (t.autoDispatch && !t.willCall && ['awaiting_driver', 'needs_reassignment'].includes(t.status) && t.pickupAt <= now + Operations.settings(s).dispatchLeadMinutes * 60000 && ((t.retryAt || 0) <= now || now>=t.pickupAt+missedPickupGrace)) {
     dispatchNext(s,t,now); changed = true;
   }
   for(const t of s.trips.filter(t=>t.isSharedRun))SharedPlanner.sync(s,t,now);
@@ -187,6 +215,36 @@ function tick(s, now = Date.now()) {
 }
 function performAction(s, t, command, user, body = {}, now = Date.now()) {
   if (!t) throw new Error('Trip not found');
+  if (command === 'bulk_unassign' || command === 'bulk_will_call') {
+    if (user.role !== 'owner') throw Error('Owner access required');
+    if (t.isSharedRun || t.poolParentId || !['awaiting_driver','needs_reassignment','offered','accepted'].includes(t.status)) {
+      throw Error('Only individual rides before departure can be changed.');
+    }
+    for (const offer of s.offers) if (offer.tripId === t.id && offer.status === 'pending') {
+      offer.status = 'replaced_by_owner';
+      offer.respondedAt = now;
+    }
+    Reservations.release(s,t,'released','Updated by dispatch',now);
+    if (t.driverId) {
+      const driver = s.drivers.find(item => item.id === t.driverId);
+      if (driver && driver.status === 'busy') freeDriver(driver);
+    }
+    for (const key of ['confirmedDriver','plannedDriverId','plannedPickupAt','plannedEndAt','recoveryUntil','recoveryDriverIds']) delete t[key];
+    t.driverId = null;
+    t.status = 'awaiting_driver';
+    t.excluded = [...(t.droppedDrivers || [])];
+    t.dispatchError = '';
+    t.dispatchExhausted = false;
+    t.redFlag = false;
+    if (command === 'bulk_will_call') {
+      t.willCall = body.pickupAt == null;
+      if (!t.willCall) t.pickupAt = body.pickupAt;
+    }
+    t.autoDispatch = command === 'bulk_will_call' && !t.willCall;
+    t.retryAt = now;
+    event(s,command === 'bulk_unassign' ? 'dispatch.unassigned' : 'trip.will_call_updated',t,user.name);
+    return;
+  }
   if (command === 'retry') {
     if (user.role !== 'owner') throw new Error('Owner access required');
     if (!['awaiting_driver', 'needs_reassignment'].includes(t.status)) throw new Error('Resolve the current offer or trip before retrying');
@@ -215,6 +273,7 @@ function performAction(s, t, command, user, body = {}, now = Date.now()) {
   if (command === 'accept' || command === 'decline') {
     const o = s.offers.find(o => o.tripId === t.id && o.id === body.offerId);
     if (user.role !== 'driver' || !o || o.driverId !== user.driverId) throw new Error('This offer is not yours');
+    if (o.status === 'taken') throw Object.assign(new Error('This ride was already taken.'),{status:409});
     if (o.status !== 'pending' || o.expiresAt <= now || t.status !== 'offered') throw new Error('Offer is no longer available');
     if (command === 'decline') {
       if (!declineReasons.includes(body.reason)) throw new Error('Choose a listed decline reason');
@@ -239,10 +298,14 @@ function performAction(s, t, command, user, body = {}, now = Date.now()) {
   if (command === 'cancel') {
     if (!(user.role === 'owner' || user.role === 'customer' && user.phone === t.customerPhone)) throw new Error('Not authorized');
     if (['onboard', 'completed', 'cancelled'].includes(t.status)) throw new Error('Cannot cancel at this stage; contact dispatch');
-    Reservations.release(s,t,'cancelled','Trip cancelled',now);Operations.outcome(s,t,'cancelled',now);t.cancelledAt=now;
+    if (user.role === 'owner' && body.reason !== undefined) {
+      if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.trim().length > 200) throw Error('Enter a reason of up to 200 characters.');
+      t.cancellationReason = body.reason.trim();
+    }
+    Reservations.release(s,t,'cancelled','Trip cancelled',now);Operations.outcome(s,t,'cancelled',now);t.cancelledAt=now;t.cancelledBy=user.name;
     for (const o of s.offers) if (o.tripId === t.id && o.status === 'pending') o.status = 'cancelled';
     if (t.driverId) freeDriver(s.drivers.find(d => d.id === t.driverId));
-    t.driverId = null; t.status = 'cancelled'; t.redFlag = false; event(s, 'trip.cancelled', t, user.name); return;
+    t.driverId = null; t.status = 'cancelled'; t.redFlag = false; event(s, 'trip.cancelled', t, user.name, t.cancellationReason, now); return;
   }
   if (command === 'rate') {
     if (user.role !== 'customer' || user.phone !== t.customerPhone || t.status !== 'completed' || t.rating) throw new Error('Rating is unavailable');
@@ -274,7 +337,7 @@ function performAction(s, t, command, user, body = {}, now = Date.now()) {
     event(s,'driver.available',t,user.name,s.drivers.find(d=>d.id===user.driverId).status==='offline'?'Ride finished; driver went offline as requested.':'Ride finished; driver is available for the next pickup.');
     for (const waiting of s.trips) if (waiting.autoDispatch && ['awaiting_driver','needs_reassignment'].includes(waiting.status)) waiting.retryAt=now;
   }
-  Operations.stage(s,t,command,now);event(s, `trip.${t.status}`, t, user.name);
+  Operations.stage(s,t,command,now);event(s, `trip.${t.status}`, t, user.name, undefined, now);
 }
 function action(s,t,command,user,body={},now=Date.now()){
  if(command==='unpool'){
@@ -339,3 +402,10 @@ function scoped(s, user, now = Date.now()) {
   return copy;
 }
 module.exports = { id, places, phoneValid, declineReasons, releaseReasons, seed, event, estimate, eligibility, eligible, regularDriver, recoveryTrip, offer, closeOffer, tick, action, validateRows, scoped };
+
+
+
+
+
+
+

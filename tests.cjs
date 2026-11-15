@@ -198,7 +198,7 @@ test('LGTC plan respects capacity, accessibility and buffer and holds rows with 
   assert.equal(p.runs[1].trips[0].seats,5);
   assert.deepEqual(p.unplanned.map(r=>r.reference),['100-203-A','100-205-A','100-204-A']);
   assert.match(p.unplanned[0].reasons.join(' '),/No suitable vehicle free/);
-  assert.match(p.unplanned[1].reasons.join(' '),/Review source instructions/);
+  assert.match(p.unplanned[1].reasons.join(' '),/Interpret remaining workbook instructions/);
   assert.equal(LGTC.plan(b,{...opts,notesReviewed:true}).allocated,5);
   assert.equal(LGTC.plan(b,{...opts,profiles:{}}).allocated,0);
   assert.throws(()=>LGTC.plan(b,{...opts,profiles:{A:{mode:'standard',base:1,extras:[0,0]}}}),/extra-seat/);
@@ -281,6 +281,8 @@ test('tomorrow’s LGTC import plans the regular driver and the live worker offe
   assert.equal((await o('/api/lgtc/customer',{action:'save',name:'Repeat Test Rider',phone:'202-555-0109',driverId:'d1'})).status,200);
   assert.equal((await o('/api/lgtc/settings',{enabled:true,driverIds:['d1','d2'],buffer:10,profiles:{A:{mode:'standard',base:1,extras:[]}}})).status,200);
   const filename='LGTC_tomorrow.csv',serviceDate='2026-11-10';
+  assert.equal((await o('/api/driver/availability',{driverId:'d1',serviceDate,selection:'hours',start:'07:00',end:'12:00'})).status,200);
+  assert.equal((await regular('/api/state')).data.state.drivers[0].availability[serviceDate].start,420);
   const base64=Buffer.from(['08','09'].map((hour,i)=>{
     const row=Array(38).fill('');
     Object.assign(row,{0:'MCD1',1:'551-10'+i+'-A',2:'11/10/2026',3:'A',4:'Repeat Test Rider',7:pickup.name,
@@ -605,6 +607,30 @@ async function harness(t, options = {}) {
 }
 async function owner(c) { assert.equal((await c('/api/demo-login', { role: 'owner' })).status, 200); }
 
+test('owner bulk reserves, unassigns and confirms will-call rides atomically', async t => {
+  const now = Date.now(), h = await harness(t,{clock:()=>now}), o = h.client(), d = h.client();
+  await owner(o);
+  await driver(d,'d1');
+  h.mutate(state => state.trips.slice(0,2).forEach((ride,index) => {
+    ride.pickupAt = now + (index+1)*3*3600000;
+  }));
+  const ids = h.load().trips.slice(0,2).map(ride=>ride.id);
+  const bulk = (action,fields={}) => o('/api/trips/bulk',{action,ids,...fields});
+  assert.equal((await d('/api/trips/bulk',{action:'unassign',ids})).status,403);
+  assert.equal((await bulk('assign',{driverId:'d1'})).status,200);
+  assert.ok(h.load().trips.slice(0,2).every(ride=>ride.reservedDriverId==='d1'));
+  assert.equal((await bulk('unassign')).status,200);
+  assert.ok(h.load().trips.slice(0,2).every(ride=>!ride.reservedDriverId && ride.dispatchPaused && !ride.autoDispatch));
+  assert.equal((await bulk('will-call',{pickupAt:null})).status,200);
+  assert.equal((await bulk('assign',{driverId:'d1'})).status,400);
+  assert.equal((await bulk('will-call',{pickupAt:now-1})).status,400);
+  const pickupAt = now+4*3600000;
+  assert.equal((await bulk('will-call',{pickupAt})).status,200);
+  assert.ok(h.load().trips.slice(0,2).every(ride=>!ride.willCall && ride.autoDispatch && ride.pickupAt===pickupAt));
+  assert.equal((await bulk('assign',{driverId:'d1'})).status,400);
+  assert.ok(h.load().trips.slice(0,2).every(ride=>!ride.reservedDriverId));
+});
+
 test('hosted demo protects pages and APIs while allowing the health check', async t => {
   const password = 'synthetic-preview-test-password';
   assert.throws(() => createApp({ dbPath: ':memory:', hostedDemoPassword: '' }), /preview password/);
@@ -705,7 +731,7 @@ test('public hosted demo opens the workspace chooser and protects private input 
   const page = await fetch(base, { redirect: 'manual' });
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('www-authenticate'), null);
-  assert.match(await page.text(), /<script[^>]*src="\/app\.js"/);
+  assert.match(await page.text(), /<script[^>]*src="\.\/app\.js"/);
   const tester = client();
   assert.equal((await tester('/api/config')).data.publicDemo, true);
   assert.equal((await tester('/api/state')).status, 401);
@@ -1138,7 +1164,7 @@ test('urgent recovery offers to three drivers; declining one preserves others an
  let pending=s.offers.filter(o=>o.status==='pending');assert.equal(pending.length,3);assert.ok(pending.every(o=>o.mode==='urgent_group'));
  const decline=pending[0];D.action(s,trip,'decline',{role:'driver',driverId:decline.driverId,name:'Driver'},{offerId:decline.id,reason:'On a break'},now+2000);assert.equal(trip.status,'offered');
  pending=s.offers.filter(o=>o.status==='pending');const winner=pending[0],loser=pending[1];D.action(s,trip,'accept',{role:'driver',driverId:winner.driverId,name:'Winner'},{offerId:winner.id},now+3000);
- assert.equal(trip.driverId,winner.driverId);assert.equal(loser.status,'taken');assert.throws(()=>D.action(s,trip,'accept',{role:'driver',driverId:loser.driverId,name:'Late'},{offerId:loser.id},now+3001),/no longer/);
+ assert.equal(trip.driverId,winner.driverId);assert.equal(loser.status,'taken');assert.throws(()=>D.action(s,trip,'accept',{role:'driver',driverId:loser.driverId,name:'Late'},{offerId:loser.id},now+3001),/This ride was already taken/ );
  assert.deepEqual(D.scoped(s,{role:'driver',driverId:loser.driverId}).offerUpdates,[{id:loser.id,status:'taken'}]);
 });
 test('manual driver selection requires owner, reason, suitable availability and an unconfirmed ride',()=>{

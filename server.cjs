@@ -13,7 +13,7 @@ const QueueReviewDemo=require('./queue-review-demo.cjs');
 const VehiclePlanner=require('./shared-planner.cjs');
 const Reservations=require('./reservations.cjs');
 const RideService=require('./ride-service.cjs');
-const { parseFile, workbook } = require('./excel.cjs');
+const { parseFile, workbook, xlsx } = require('./excel.cjs');
 const { nextRideScenario } = require('./demo.cjs');
 const Operations = require('./operations.cjs');
 const LGTC = require('./lgtc.cjs');
@@ -21,7 +21,7 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer } = {}) {
   const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
   const privateDemo=hostedDemo&&!publicDemo;
   if (sheetFile && (hostedDemo || pilotConfig || roadMatrix || !dbPath)) throw Error('Sheet testing requires a separate local database.');
@@ -73,6 +73,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   } : { scripts:'', styles:'', images:'', connect:'', extra:'' };
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  const fleetDb = fleetImportPath ? new DatabaseSync(fleetImportPath) : db;
+  fleetDb.exec('CREATE TABLE IF NOT EXISTS driver_profile_photos(driver_id TEXT PRIMARY KEY, jpeg BLOB NOT NULL, version TEXT NOT NULL)');
+  fleetDb.exec('CREATE TABLE IF NOT EXISTS fleet_import_records(kind TEXT NOT NULL, record_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind,record_key))');
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user TEXT NOT NULL,expires INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS otp(phone TEXT PRIMARY KEY,code TEXT NOT NULL,expires INTEGER NOT NULL,attempts INTEGER NOT NULL,sent INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL);');
   const initial = D.seed(clock(),initialSettings);
   if (sheetFile) Object.assign(initial,{trips:[],customers:[]});
@@ -189,7 +192,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       settings.driverIds.map(id => {
         const d = rosterById.get(id);
         return d && [d.id,d.name,d.vehicle,d.vehicleId,d.plate,d.seats,d.capabilities,
-          ...(d.availability?.[date] ? [d.availability[date]] : [])];
+          d.driverDisabled,d.vehicleDisabled,d.rosterManaged,d.rosterServiceDate,LGTC.driverShift(d,date)];
       }),
       batch.rows.filter(r => r.serviceDate === date).map(r => preferences.get(r.customerKey) || null)
     ]));
@@ -259,8 +262,19 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       throw error;
     }
   }
+  db.exec('CREATE TABLE IF NOT EXISTS driver_documents (driver_id TEXT, kind TEXT, payload TEXT NOT NULL, PRIMARY KEY(driver_id,kind))');
+  const documentRows=db.prepare("SELECT driver_id,kind,json_extract(payload,'$.status') AS status,json_extract(payload,'$.expiresOn') AS expiresOn FROM driver_documents");
   const load = () => {
     const state = Operations.normalize(JSON.parse(db.prepare('SELECT body FROM state WHERE id=1').get().body));
+    const documents=Object.groupBy(documentRows.all(),row=>row.driver_id);
+    for(const driver of state.drivers){
+      const records=documents[driver.id];
+      driver.documentEligibility=records||fleetImportPath&&driver.id==='d2'?{
+        license:records?.find(row=>row.kind==='license')?.status,
+        expiresOn:records?.find(row=>row.kind==='license')?.expiresOn,
+        contract:records?.find(row=>row.kind==='contract')?.status
+      }:undefined;
+    }
     const imported=state.trips.filter(t=>t.lgtc&&!t.demoRunId&&!['completed','cancelled'].includes(t.status));
     if(imported.length){
       const preferences=new Map(lgtcPreferenceRows.all().map(row=>[row.customer_key,row.driver_id]));
@@ -281,11 +295,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   db.exec('BEGIN IMMEDIATE');try{syncTrips(load());db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');db.close();throw e;}
   const save = s => { s.revision++; db.prepare('UPDATE state SET body=? WHERE id=1').run(JSON.stringify(s));syncTrips(s); };
   const dispatchHealth={lastCheckAt:null,lastSuccessAt:null,lastError:null,intervalSeconds:3,automaticDispatch};
-  if(automaticDispatch){mutate(s=>{for(const trip of s.trips)if(!trip.demoRunId&&['awaiting_driver','needs_reassignment','offered'].includes(trip.status))trip.autoDispatch=true;D.tick(s,clock());});dispatchHealth.lastCheckAt=clock();dispatchHealth.lastSuccessAt=clock();}
+  if(automaticDispatch){mutate(s=>{for(const trip of s.trips)if(!trip.demoRunId&&!trip.willCall&&!trip.dispatchPaused&&['awaiting_driver','needs_reassignment','offered'].includes(trip.status))trip.autoDispatch=true;D.tick(s,clock());});dispatchHealth.lastCheckAt=clock();dispatchHealth.lastSuccessAt=clock();}
   const listeners = new Map(), limits = new Map();
   function clientState(user){
     const now=clock(),state=D.scoped(load(),user,now);
     if(user.role==='owner'){
+      const photos = new Map(fleetDb.prepare('SELECT driver_id, version FROM driver_profile_photos').all().map(row=>[row.driver_id,row.version]));
+      for (const driver of state.drivers) driver.profilePhotoVersion = photos.get(driver.id);
       if(roadRouting) DispatchReview.projectForecasts(state,roadRouting,now);
       state.dispatchHealth={...dispatchHealth,routing:roadRouting?.health() || {mode:'demo',status:'simulated'}};
     }
@@ -305,7 +321,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     let queued = 0;
     for (const ride of state.trips) {
       if (!ride.autoDispatch || ride.poolParentId || !['awaiting_driver','needs_reassignment'].includes(ride.status) ||
-          ride.pickupAt > opens || (ride.pickupAt < now-300000 && !(ride.recoveryUntil >= now)) ||
+          ride.pickupAt > opens || (ride.pickupAt <= now-15*60000 && !(ride.recoveryUntil >= now)) ||
           !(ride.retryAt > now) || (!ride.dispatchError && !Road.requiresRoad(ride))) continue;
       if ((ride.demoRunId || null) !== (driver.demoRunId || null) || driver.seats < ride.passengers ||
           ride.excluded?.includes(driverId) || !ride.requirements.every(requirement => driver.capabilities.includes(requirement))) continue;
@@ -497,6 +513,300 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         res.setHeader('Set-Cookie', 'prolift=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res, 200, { ok: true });
       }
       if (url.pathname.startsWith('/api/')) requireRole(user);
+      if (url.pathname === '/api/fleet/availability' && req.method === 'POST') {
+        requireRole(user,'owner');
+        const {driverId,kind,disabled} = await body(req);
+        if (!['driver','vehicle'].includes(kind) || typeof disabled !== 'boolean') throw Error('Choose a valid fleet status.');
+        mutate(state => {
+          const driver = state.drivers.find(item=>item.id===driverId && !item.demoRunId);
+          if (!driver) throw Error('Choose an operational driver.');
+          const targets = kind==='vehicle' && driver.plate ? state.drivers.filter(item=>item.plate===driver.plate) : [driver];
+          if (disabled && targets.some(item=>item.status==='busy' || state.offers.some(offer=>offer.driverId===item.id && offer.status==='pending' && offer.expiresAt>clock()))) throw Error('Finish active rides and resolve pending offers before disabling this resource.');
+          for (const item of targets) item[kind==='driver'?'driverDisabled':'vehicleDisabled'] = disabled;
+          D.event(state,'fleet.availability_changed',null,user.name,kind+' '+(disabled?'disabled':'enabled'));
+        });
+        publish();
+        return json(res,200,{ok:true});
+      }
+      if (['/api/fleet-roster/validate','/api/fleet-roster/apply'].includes(url.pathname) && req.method === 'POST') {
+        requireRole(user,'owner');
+        if (publicDemo) return json(res,403,{error:'Roster validation is available in the owner workspace.'});
+        const {filename,base64} = await body(req);
+        if (typeof filename !== 'string' || !/\.xlsx$/i.test(filename) || typeof base64 !== 'string') throw Error('Choose the completed .xlsx roster.');
+        const file = Buffer.from(base64,'base64');
+        if (file.length > 5*1024*1024) throw Error('Maximum file size is 5 MB.');
+        const {links,...report} = require('./fleet-roster.cjs').validateRoster(file);
+        if (url.pathname.endsWith('/validate')) return json(res,200,report);
+        if (report.issues.length || !links.length) throw Error('Resolve roster issues and include an eligible driver before applying.');
+        mutate(state => {
+          const roster = state.drivers.filter(driver=>!driver.demoRunId);
+          if (links.some(link=>!roster.some(driver=>driver.id===link.id))) throw Error('Each enabled account ID must match an existing operational driver.');
+          if (state.trips.some(ride=>ride.driverId&&!['completed','cancelled'].includes(ride.status)) ||
+              state.offers.some(offer=>offer.status==='pending'&&offer.expiresAt>clock())) throw Error('Resolve active rides and offers before applying a roster.');
+          if ((state.reservations||[]).some(reservation=>reservation.status==='reserved')) throw Error('Release existing reservations before applying a roster.');
+          const savedStatus = fleetDb.prepare('SELECT payload FROM fleet_import_records WHERE kind=? AND record_key=?');
+          const disabledRecord = (kind,key,field) => key &&
+            JSON.parse(savedStatus.get(kind,key)?.payload || '{}')[field] === 'Disabled';
+          for (const link of links) {
+            const driver = roster.find(item=>item.id===link.id);
+            if (disabledRecord('vehicle',link.vin,'Vehicle Status') ||
+                disabledRecord('driver',driver.importedDriver,'Driver Status')) {
+              throw Error('Remove disabled drivers and vehicles before applying the roster.');
+            }
+          }
+          for (const driver of roster) {
+            const link = links.find(item=>item.id===driver.id);
+            driver.driverDisabled = !link;
+            if (!link) continue;
+            const startAt=LGTC.easternPickup(link.day,link.start), endAt=LGTC.easternPickup(link.day,link.end);
+            if (!startAt || !endAt || endAt<=startAt) throw Error('Choose an unambiguous Eastern shift.');
+            driver.vehicleId=link.vin;
+            driver.vehicleDisabled=false;
+            driver.seats=link.seats;
+            driver.capabilities=driver.capabilities.filter(value=>value!=='wheelchair');
+            if (link.wheelchair) driver.capabilities.push('wheelchair');
+            driver.availability={...driver.availability,[link.day]:{start:link.start,end:link.end,startAt,endAt}};
+            driver.rosterManaged=true;
+            delete driver.rosterServiceDate;
+          }
+          D.event(state,'fleet.roster_applied',null,user.name,String(links.length)+' eligible links');
+        });
+        publish();
+        return json(res,200,report);
+      }
+      if (url.pathname === '/api/fleet-setup' && req.method === 'POST') {
+        requireRole(user,'owner');
+        if (publicDemo) return json(res,403,{error:'Fleet setup is available in the private owner workspace.'});
+        const input = await body(req);
+        const entries = input.entries ?? [input];
+        if (!Array.isArray(entries) || !entries.length || entries.length>500 ||
+            entries.some(entry=>!entry || typeof entry.driverId!=='string') ||
+            new Set(entries.map(entry=>entry.driverId)).size!==entries.length) throw Error('Include each driver account once, up to 500 accounts.');
+        const record = (kind,key) => fleetDb.prepare('SELECT payload FROM fleet_import_records WHERE kind=? AND record_key=?').get(kind,key);
+        mutate(state=>{
+        for (const [index,entry] of entries.entries()) {
+        try {
+        const {driverId,importedDriver,vin,seats,accessible,days,start,end} = entry;
+        const vehicleRecord = typeof vin==='string' && /^[A-HJ-NPR-Z0-9]{17}$/.test(vin) && record('vehicle',vin);
+        const vehicle = vehicleRecord && JSON.parse(vehicleRecord.payload);
+        if (!vehicle || vehicle['Vehicle Status']?.toLowerCase()!=='enabled') throw Error('Choose an enabled imported vehicle.');
+        if (typeof importedDriver!=='string' || !record('driver',importedDriver) || JSON.parse(record('driver',importedDriver).payload)['Driver Status']==='Disabled') throw Error('Choose an enabled imported driver.');
+        if (!Number.isInteger(seats) || seats<1 || seats>7 || typeof accessible!=='boolean') throw Error('Confirm passenger seats and accessibility.');
+        if (!Array.isArray(days) || !days.length || new Set(days).size!==days.length || days.some(day=>!Number.isInteger(day)||day<0||day>6) ||
+            !Number.isInteger(start) || !Number.isInteger(end) || start<0 || end>1440 || start>=end) throw Error('Choose weekdays and valid same-day Eastern shift hours.');
+          const driver=state.drivers.find(item=>item.id===driverId&&!item.demoRunId);
+          if (!driver) throw Error('Choose an operational driver account.');
+          if (state.drivers.some(item=>item.id!==driverId&&(item.vehicleId===vin||item.importedDriver===importedDriver))) throw Error('This vehicle or imported driver is already linked.');
+          if (state.trips.some(ride=>ride.driverId===driverId&&!['completed','cancelled'].includes(ride.status)) ||
+              state.offers.some(offer=>offer.driverId===driverId&&offer.status==='pending'&&offer.expiresAt>clock()) ||
+              state.reservations?.some(reservation=>reservation.driverId===driverId&&reservation.status==='reserved')) throw Error('Resolve this driver’s active rides, offers and reservations before editing their fleet setup.');
+          Object.assign(driver,{vehicleId:vin,importedDriver,seats,rosterManaged:true,recurringShift:{days,start,end},
+            vehicle:[vehicle.Make,vehicle.Model].filter(Boolean).join(' ')||vehicle['Vehicle Name']||vin,
+            plate:vehicle['License Plate Number']||vehicle['License Plate']||''});
+          driver.capabilities=driver.capabilities.filter(value=>value!=='wheelchair');
+          if (accessible) driver.capabilities.push('wheelchair');
+          delete driver.rosterServiceDate;
+          D.event(state,'fleet.setup_saved',null,user.name,driver.name);
+        } catch(error) { throw Error('Fleet row '+(index+1)+'. '+error.message); }
+        }
+        });
+        publish();
+        return json(res,200,{saved:true,count:entries.length});
+      }
+      if(url.pathname==='/api/driver-documents'&&['GET','POST'].includes(req.method)){
+        requireRole(user);
+        if(hostedDemo||!['driver','owner'].includes(user.role))return json(res,403,{error:'Driver documents are unavailable.'});
+        const id=user.role==='driver'?user.driverId:url.searchParams.get('driver');
+        if(!load().drivers.some(d=>d.id===id))return json(res,404,{error:'Driver not found.'});
+        db.exec('CREATE TABLE IF NOT EXISTS driver_documents (driver_id TEXT, kind TEXT, payload TEXT NOT NULL, PRIMARY KEY(driver_id,kind))');
+        if(req.method==='POST'){
+          const {kind,action,file,reason,expiresOn}=await body(req);
+          if(!['license','contract'].includes(kind))throw Error('Choose a document.');
+          let record;
+          if(action==='upload'){
+            const match=/^data:(image\/(?:jpeg|png|webp)|application\/pdf);base64,([A-Za-z0-9+/]+={0,2})$/.exec(file);
+            if(!match||kind==='license'&&match[1]==='application/pdf'||Buffer.from(match[2],'base64').length>2000000)throw Error('Choose an image or supported PDF up to 2 MB.');
+            if(fleetImportPath){
+              const sample=fs.readFileSync(path.join(__dirname,'examples',kind==='license'?'sample-license.png':'sample-contract.pdf'));
+              if(!Buffer.from(match[2],'base64').equals(sample))throw Error('The shared demo accepts only the supplied sample files.');
+            }
+            if(kind==='license'&&(!/^\d{4}-\d{2}-\d{2}$/.test(expiresOn||'')||
+               !Number.isFinite(Date.parse(expiresOn))||new Date(expiresOn).toISOString().slice(0,10)!==expiresOn))throw Error('Enter a valid license expiration date.');
+            record={file,...(kind==='license'&&{expiresOn}),status:'Pending review',uploadedBy:user.name,uploadedAt:clock()};
+          }else{
+            requireRole(user,'owner');
+            if(!['approve','correct'].includes(action)||action==='correct'&&!(typeof reason==='string'&&reason.trim()&&reason.length<=500))throw Error('Enter a correction reason.');
+            record=JSON.parse(db.prepare('SELECT payload FROM driver_documents WHERE driver_id=? AND kind=?').get(id,kind)?.payload||'null');
+            if(!record)throw Error('Upload a document first.');
+            Object.assign(record,{status:action==='approve'?'Approved':'Needs correction',reason:action==='correct'?reason.trim():'',reviewedBy:user.name,reviewedAt:clock()});
+          }
+          db.prepare('INSERT INTO driver_documents VALUES(?,?,?) ON CONFLICT(driver_id,kind) DO UPDATE SET payload=excluded.payload').run(id,kind,JSON.stringify(record));
+        }
+        const documents=Object.fromEntries(db.prepare('SELECT kind,payload FROM driver_documents WHERE driver_id=?').all(id).map(row=>[row.kind,JSON.parse(row.payload)]));
+        return json(res,200,{documents});
+      }
+      if (url.pathname === '/api/driver-profile-photo' && ['GET','POST'].includes(req.method)) {
+        requireRole(user,'owner');
+        const input = req.method === 'POST' ? await body(req) : Object.fromEntries(url.searchParams);
+        const driverId = input.driverId;
+        if (!load().drivers.some(driver=>driver.id===driverId)) return json(res,404,{error:'Driver not found'});
+        if (req.method === 'GET') {
+          const photo = fleetDb.prepare('SELECT jpeg FROM driver_profile_photos WHERE driver_id=?').get(driverId);
+          if (!photo) return json(res,404,{error:'Photo not found'});
+          res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'private, no-store'});
+          return res.end(Buffer.from(photo.jpeg));
+        }
+        const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(input.photo||''));
+        const jpeg = match && match[1].length <= 140000 && Buffer.from(match[1],'base64');
+        if (!jpeg || jpeg.length < 5 || !jpeg.subarray(0,3).equals(Buffer.from([255,216,255])) ||
+          !jpeg.subarray(-2).equals(Buffer.from([255,217]))) return json(res,400,{error:'Choose a valid JPEG profile photo'});
+        fleetDb.prepare('INSERT INTO driver_profile_photos VALUES(?,?,?) ON CONFLICT(driver_id) DO UPDATE SET jpeg=excluded.jpeg,version=excluded.version')
+          .run(driverId,jpeg,require('node:crypto').randomUUID());
+        publish();
+        return json(res,200,{ok:true});
+      }
+      if (url.pathname === '/api/fleet-record' && req.method === 'POST') {
+        requireRole(user,'owner');
+        if(publicDemo||hostedDemo) return json(res,403,{error:'Use the private Owner workspace.'});
+        const input=await body(req);
+        const clean=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
+        const name=clean(input.name,100);
+        const vehicle=input.kind==='vehicle';
+        if(!name||!['vehicle','driver'].includes(input.kind))throw Error('Enter a record name.');
+        const vin=clean(input.vin,17).toUpperCase();
+        if(vehicle&&!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin))throw Error('Enter a valid 17-character VIN.');
+        if(fleetImportPath&&(input.license||input.contract))throw Error('Use a private Owner workspace for driver documents.');
+        function attachment(value,pdfAllowed){
+          if(!value)return undefined;
+          const match=/^data:(image\/(?:jpeg|png|webp)|application\/pdf);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+          if(!match||(!pdfAllowed&&match[1]==='application/pdf'))throw Error('Choose a JPEG, PNG, WebP'+(pdfAllowed?' or PDF':'')+' file.');
+          const bytes=Buffer.from(match[2],'base64');
+          const valid=match[1]==='image/jpeg'?bytes.subarray(0,3).equals(Buffer.from([255,216,255])):
+            match[1]==='image/png'?bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])):
+            match[1]==='image/webp'?bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP':
+            bytes.toString('ascii',0,5)==='%PDF-';
+          if(!valid||bytes.length>2000000)throw Error('Choose a valid file of up to 2 MB.');
+          return value;
+        }
+        const files=vehicle?{photo:attachment(input.photo,false)}:{license:attachment(input.license,false),contract:attachment(input.contract,true)};
+        const item=vehicle?{'Vehicle Name':name,'Vehicle Identification Number (VIN)':vin,Year:clean(input.year,4),Make:clean(input.make,60),Model:clean(input.model,60),'Vehicle Status':input.status==='Disabled'?'Disabled':'Enabled'}:{name};
+        const key=vehicle?vin:name.toLowerCase();
+        if(fleetDb.prepare('SELECT 1 FROM fleet_import_records WHERE kind=? AND record_key=?').get(input.kind,key))throw Error('This fleet record already exists.');
+        fleetDb.exec('CREATE TABLE IF NOT EXISTS fleet_attachments(kind TEXT, record_key TEXT, payload TEXT, PRIMARY KEY(kind,record_key))');
+        fleetDb.exec('BEGIN IMMEDIATE');
+        try{
+          fleetDb.prepare('INSERT INTO fleet_import_records VALUES(?,?,?)').run(input.kind,key,JSON.stringify(item));
+          fleetDb.prepare('INSERT INTO fleet_attachments VALUES(?,?,?)').run(input.kind,key,JSON.stringify(files));
+          fleetDb.exec('COMMIT');
+        }catch(error){fleetDb.exec('ROLLBACK');throw error;}
+        return json(res,201,{saved:true});
+      }
+      if (url.pathname === '/api/fleet-record/status' && req.method === 'POST') {
+        requireRole(user,'owner');
+        const {kind,key,disabled} = await body(req);
+        if (!['driver','vehicle'].includes(kind) || typeof key!=='string' || typeof disabled!=='boolean') throw Error('Choose a valid fleet status.');
+        const record = fleetDb.prepare('SELECT payload FROM fleet_import_records WHERE kind=? AND record_key=?').get(kind,key);
+        if (!record) return json(res,404,{error:'Fleet record not found.'});
+        const field = kind==='driver'?'Driver Status':'Vehicle Status';
+        const payload = JSON.parse(record.payload);
+        mutate(state=>{
+          const linked = state.drivers.filter(d=>(kind==='driver'?d.importedDriver:d.vehicleId)===key);
+          if (disabled && linked.some(d=>d.status==='busy'||state.offers.some(o=>o.driverId===d.id&&o.status==='pending'&&o.expiresAt>clock()))) {
+            throw Error('Finish active rides and resolve pending offers before disabling this resource.');
+          }
+          for (const driver of linked) driver[kind+'Disabled'] = disabled;
+          payload[field] = disabled?'Disabled':'Enabled';
+          fleetDb.prepare('UPDATE fleet_import_records SET payload=? WHERE kind=? AND record_key=?').run(JSON.stringify(payload),kind,key);
+          D.event(state,'fleet.availability_changed',null,user.name,kind+' '+payload[field].toLowerCase());
+        });
+        publish();
+        return json(res,200,{status:payload[field]});
+      }
+      if(url.pathname==='/api/fleet-record'&&req.method==='GET'){
+        requireRole(user,'owner');
+        const kind=url.searchParams.get('kind'), key=url.searchParams.get('key');
+        const table=fleetDb.prepare("SELECT 1 FROM sqlite_master WHERE name='fleet_attachments'").get();
+        const files=table?JSON.parse(fleetDb.prepare('SELECT payload FROM fleet_attachments WHERE kind=? AND record_key=?').get(kind,key)?.payload||'{}'):{};
+        return json(res,200,{files:fleetImportPath||publicDemo||hostedDemo?{photo:files.photo}:files});
+      }
+      if (url.pathname === '/api/fleet-import' && ['GET','POST'].includes(req.method)) {
+        requireRole(user,'owner');
+        if (publicDemo || fleetImportPath && req.method === 'POST') return json(res,403,{error:'Fleet uploads are available in the private owner workspace.'});
+        if (req.method === 'GET') {
+          const counts = fleetDb.prepare('SELECT kind, COUNT(*) AS total FROM fleet_import_records GROUP BY kind').all();
+          const records = url.searchParams.get('list') === '1' ? fleetDb.prepare('SELECT kind, payload FROM fleet_import_records ORDER BY kind, record_key').all().map(row=>({kind:row.kind,...JSON.parse(row.payload)})) : undefined;
+          return json(res,200,{counts,records});
+        }
+        const {filename, base64} = await body(req);
+        if (typeof filename !== 'string' || !/\.xlsx$/i.test(filename) || typeof base64 !== 'string') throw Error('Choose an Excel .xlsx file.');
+        const file = Buffer.from(base64,'base64');
+        if (file.length > 5*1024*1024) throw Error('Maximum file size is 5 MB.');
+        const rows = xlsx(file);
+        const headerIndex = rows.findIndex(row => row.some(value => ['Vehicle Identification Number (VIN)','Driver Name'].includes(String(value).trim())));
+        if (headerIndex < 0) throw Error('Include a VIN or Driver Name column.');
+        const headers = rows[headerIndex].map(value => String(value).trim());
+        const records = [];
+        for (const row of rows.slice(headerIndex+1)) {
+          if (!row.some(value => String(value ?? '').trim())) continue;
+          const item = Object.fromEntries(headers.flatMap((name,index)=>name ? [[name,String(row[index] ?? '').trim()]] : []));
+          if (Object.values(item).includes('#FORMULA_NOT_ALLOWED')) throw Error('Replace formulas with values before importing.');
+          const vin = item['Vehicle Identification Number (VIN)']?.toUpperCase();
+          const name = item['Driver Name'] || item['Last Known Driver'];
+          if (!vin && !name) throw Error('Each row must include a VIN or driver name.');
+          if (vin) records.push(['vehicle',vin,JSON.stringify(item)]);
+          if (name) records.push(['driver',name.toLowerCase(),JSON.stringify({name,...(!vin && item)})]);
+        }
+        if (!records.length) throw Error('The file contains no fleet records.');
+        const save = fleetDb.prepare('INSERT INTO fleet_import_records VALUES (?,?,?) ON CONFLICT(kind,record_key) DO UPDATE SET payload=excluded.payload');
+        fleetDb.exec('BEGIN');
+        try {
+          for (const record of records) save.run(...record);
+          fleetDb.exec('COMMIT');
+        } catch (error) {
+          fleetDb.exec('ROLLBACK');
+          throw error;
+        }
+        return json(res,200,{counts:fleetDb.prepare('SELECT kind, COUNT(*) AS total FROM fleet_import_records GROUP BY kind').all()});
+      }
+      if (url.pathname === '/api/trips/bulk' && req.method === 'POST') {
+        requireRole(user,'owner');
+        const { action, ids, driverId, pickupAt } = await body(req);
+        if (!['assign','unassign','will-call'].includes(action) || !Array.isArray(ids) || !ids.length ||
+            ids.length > 25 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) {
+          throw Error('Select up to 25 rides and a bulk action.');
+        }
+        const now = clock();
+        if (action === 'will-call' && pickupAt !== null && (!Number.isSafeInteger(pickupAt) || pickupAt <= now)) {
+          throw Error('Choose a future pickup time or mark the rides as will-call.');
+        }
+        mutate(s => {
+          for (const id of ids) {
+            const ride = s.trips.find(item => item.id === id);
+            try {
+              if (!ride || ride.isSharedRun || ride.poolParentId) throw Error('Choose an individual ride.');
+              if (action === 'assign') {
+                if (ride.willCall) throw Error('Confirm the will-call pickup first.');
+                if (ride.status === 'awaiting_driver' && ride.pickupAt > now + Operations.settings(s).dispatchLeadMinutes * 60000) {
+                  Reservations.reserve(s,ride,driverId,pilot?.stops || D.places,now);
+                  ride.autoDispatch = true;
+                  D.event(s,'dispatch.bulk_reserved',ride,user.name);
+                } else {
+                  D.action(s,ride,'manual_offer',user,{driverId,reason:'Owner reviewed availability'},now);
+                }
+                delete ride.dispatchPaused;
+              } else {
+                if (action === 'will-call' && pickupAt !== null && !ride.willCall) throw Error('Only will-call rides can be given a confirmed pickup here.');
+                D.action(s,ride,action === 'unassign' ? 'bulk_unassign' : 'bulk_will_call',user,{pickupAt},now);
+                ride.dispatchPaused = action === 'unassign';
+              }
+            } catch (error) {
+              throw Error((ride?.reference || 'Selected ride') + ': ' + error.message);
+            }
+          }
+        });
+        publish();
+        return json(res,200,{count:ids.length});
+      }
       if(url.pathname==='/api/operations/readiness'&&req.method==='GET'){requireRole(user,'owner');return json(res,200,DispatchReview.readiness(load(),clock()));}
       const reviewRoute=url.pathname.match(/^\/api\/trips\/([^/]+)\/dispatch-review$/);
       if (reviewRoute && req.method==='GET') {
@@ -653,7 +963,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
             let autoError;
             for (const serviceDate of automaticDates) {
               try {
-                const plan = LGTC.plan(schedule, { ...automation, serviceDate },data);
+                const driverIds = automation.driverIds.filter(id => data.roster.some(d=>d.id===id&&!d.driverDisabled&&!d.vehicleDisabled));
+                if (!driverIds.length) throw Error('No enabled drivers with enabled vehicles in the configured fleet.');
+                const plan = LGTC.plan(schedule, { ...automation, driverIds, serviceDate },data);
                 recordLgtcDraft(schedule,serviceDate,plan,data,true);
                 autoPlanned.push({ serviceDate, allocated:plan.allocated, unassigned:plan.unplanned.length });
               } catch (error) { autoError = error.message; break; }
@@ -925,8 +1237,10 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         }); publish(); return json(res, 200, { ok: true });
       }
       if (url.pathname === '/api/driver/availability' && req.method === 'POST') {
-        requireRole(user,'driver');
-        const { serviceDate, selection, start, end } = await body(req);
+        requireRole(user);
+        if (!['owner','driver'].includes(user.role)) return json(res,403,{error:'Owner or driver access required.'});
+        const { serviceDate, selection, start, end, driverId } = await body(req);
+        const targetId = user.role === 'owner' ? driverId : user.driverId;
         if (typeof serviceDate !== 'string' || !/^20\d\d-\d\d-\d\d$/.test(serviceDate) || LGTC.easternPickup(serviceDate,720) === null) {
           throw Error('Choose a valid date.');
         }
@@ -942,7 +1256,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           shift = { start:from, end:to, startAt, endAt };
         }
         mutate(s => {
-          const driver = s.drivers.find(d => d.id === user.driverId);
+          const driver = s.drivers.find(d => d.id === targetId && (user.role === 'driver' || !d.demoRunId));
           if (!driver) throw Error('Driver not found.');
           driver.availability ??= {};
           if (shift) driver.availability[serviceDate] = shift;
@@ -973,6 +1287,11 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         const scopedKey = hash(JSON.stringify(user) + ':' + key), fingerprint = hash(req.url + JSON.stringify(b));
         const cached = db.prepare('SELECT * FROM requests WHERE key=?').get(scopedKey);
         if (cached) { if (cached.fingerprint !== fingerprint) throw new Error('Request identifier was reused for a different action'); return json(res, 200, JSON.parse(cached.body)); }
+        if (claimTestOffer && user.role === 'driver' && b.action === 'accept') {
+          const snapshot = load();
+          D.action(snapshot, snapshot.trips.find(t => t.id === match[1]), b.action, user, b, clock());
+          await claimTestOffer(match[1], user.driverId);
+        }
         if (roadRouting && user.role==='driver' && b.action==='accept') {
           const snapshot=load(), trip=snapshot.trips.find(t=>t.id===match[1]);
           const offer=snapshot.offers.find(o=>o.id===b.offerId && o.tripId===match[1] && o.driverId===user.driverId &&
@@ -990,7 +1309,8 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
             if(prior.fingerprint!==fingerprint) throw Error('Request identifier was reused for a different action');
             return JSON.parse(prior.body);
           }
-          D.action(s, s.trips.find(t => t.id === match[1]), b.action, user, b, clock());
+          const ride=s.trips.find(t=>t.id===match[1]);
+          D.action(s,ride,b.action,user,b,advanceRideClock?.(ride,b.action,user) ?? clock());
           const result = { ok: true }; db.prepare('INSERT INTO requests VALUES(?,?,?,?)').run(scopedKey, fingerprint, JSON.stringify(result), clock()); return result; });
         publish(); return json(res, 200, result);
       }
@@ -1036,13 +1356,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   function close() {
     closed=true;clearInterval(worker);clearInterval(maintenance);
     for (const res of listeners.keys()) res.end();
-    listeners.clear();db.close();
+    listeners.clear();if (fleetDb !== db) fleetDb.close();db.close();
     if (pilot) for (const stop of pilot.stops) {
       const index=D.places.indexOf(stop);
       if(index!==-1) D.places.splice(index,1);
     }
   }
-  return { server, close, load, mutate };
+  return { server, close, load, mutate, publish };
 }
 if (require.main === module && process.env.PROLIFT_HOSTED_DEMO === '1') {
   require('./start-demo.cjs').startDemo(createApp);
@@ -1059,3 +1379,9 @@ if (require.main === module && process.env.PROLIFT_HOSTED_DEMO === '1') {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { app.close(); app.server.close(() => process.exit()); });
 }
 module.exports = { createApp };
+
+
+
+
+
+

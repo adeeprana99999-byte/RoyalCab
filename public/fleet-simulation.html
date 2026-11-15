@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RoyalCab | Fleet simulation</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#14233a;font:16px system-ui}main{max-width:1200px;margin:auto;padding:24px}header,section{background:white;border:1px solid #dce5ef;border-radius:14px;padding:18px;margin-bottom:16px}h1{margin:8px 0}a{color:#174fa0}button,select,input{font:inherit;padding:8px;border:1px solid #9aabc0;border-radius:7px}button{background:#153c73;color:white}#summary{display:flex;flex-wrap:wrap;gap:12px;padding:12px 0}#summary span{padding:8px 12px;background:#eaf1fc;border-radius:8px}.table{overflow:auto;max-height:65vh}table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #e2e8f0}th{position:sticky;top:0;background:white}
+tbody tr[data-highlighted] td{background:#dbeafe;box-shadow:inset 0 -2px #2563eb}
+tbody tr{cursor:pointer}dialog{border:1px solid #9aabc0;border-radius:14px;padding:24px;color:inherit}dialog::backdrop{background:#14233a66}dialog dd{margin:4px 0 12px;font-weight:600}
+#ride-times-list li{padding:8px 12px;border-radius:6px}#ride-times-list li[aria-current="step"]{background:#dbeafe;outline:2px solid #2563eb;font-weight:700}
+#ride-times-list button{display:block;width:100%;background:transparent;color:inherit;border:0;text-align:left;font-weight:inherit;cursor:pointer}#ride-times-list button:disabled{cursor:default;opacity:.65}
+</style>
+<main>
+<header><a href="/owner/fleet-simulation#lgtc-preview" onclick="location.hash=this.hash;location.reload();return false">LGTC day plan preview</a> · <a href="#dispatch-269" onclick="location.hash=this.hash;location.reload();return false">269 rides / 20 drivers</a> · <a href="/owner/">Owner workspace</a> · <a href="/">Three-ride replay</a><h1>Full-fleet dispatch simulation</h1><p>November 14, 2026 · 284 rides · <span id="simulation-driver-count">37</span> drivers and vehicles</p><p>Automatic simulated offers, acceptance, pickup and drop-off. At 1×, one simulated minute takes 0.25 seconds.</p><button id="start" disabled>Start</button> <button id="pause" disabled>Pause</button> <button id="previous-offer" disabled>Previous offer</button> <button id="next-offer" disabled>Next offer</button> <button id="restart">Reset simulation</button> <label> Playback speed <select id="speed" disabled><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label> <strong id="clock"></strong><form id="jump-form"><p><label>Simulation time (ET) <input id="jump-time" type="time" required disabled></label> <button id="jump" disabled>Jump to time</button></p><small>Offers open 15 minutes before pickup. Pause to jump.</small></form><form id="pickup-form"><p><label>Pickup time (ET) <input id="pickup-time" type="time" required disabled></label> <button id="jump-pickup" disabled>Jump to pickup</button></p></form><form id="ride-form"><p><label>Ride ID <input id="ride-id" type="text" required disabled></label> <button id="jump-ride" disabled>Jump to ride</button></p></form></header>
+<section><label>Driver <select id="driver"><option value="">All drivers</option></select></label> <label>Ride status <select id="status"><option value="">All statuses</option><option>Scheduled</option><option>Offer pending</option><option>Heading to pickup</option><option>Onboard</option><option>Completed</option></select></label><div id="summary"></div><p id="error" role="status"></p>
+<div class="table"><table><thead><tr><th>Pickup ET</th><th>Drop-off ET</th><th>Ride</th><th>Driver</th><th>Vehicle</th><th>Status</th><th>Time basis</th></tr></thead><tbody></tbody></table></div></section>
+<section id="dispatch-269" hidden><h2>269-ride dispatch replay</h2><p><a href="/owner/fleet-simulation#lgtc-preview" onclick="location.hash=this.hash;location.reload();return false">LGTC day plan preview</a></p><p>20 test drivers · Shared test location · Driver acceptance simulated</p><p><button id="dispatch-start">Start dispatch</button> <button id="dispatch-reset">Reset dispatch</button> <strong id="dispatch-clock"></strong></p><p id="dispatch-counts"></p><label>Driver <select id="dispatch-driver"><option value="">All drivers</option></select></label> <label><input type="checkbox" id="dispatch-attention"> Needs Attention only</label><div class="table"><table><thead><tr><th>Pickup ET</th><th>Ride</th><th>Driver</th><th>Status</th><th>Owner action</th></tr></thead><tbody id="dispatch-rows"></tbody></table></div></section><dialog closedby="any" id="ride-times" aria-labelledby="ride-times-title"><h2 id="ride-times-title"></h2><ol id="ride-times-list" aria-label="Ride timeline"></ol><p id="ride-times-status" role="status"></p><p id="ride-times-error" role="alert"></p><form method="dialog"><button>Close ride times</button></form></dialog>
+<section id="lgtc-preview" hidden aria-labelledby="lgtc-preview-title">
+<p><a href="/owner/">Owner workspace</a> · <a href="/owner/fleet-simulation">Fleet simulation</a></p>
+<h2 id="lgtc-preview-title">November 14 LGTC day plan preview</h2>
+<p>269 rides · 9 planned · 260 need owner review · Awaiting approval</p>
+<p>Two saved vehicle links, a 30-minute buffer, and a draft assumption of one base seat per rider.</p>
+<p><button id="advance-approved">Advance approved test rides</button> <span id="approved-status" role="status"></span> · <a href="/owner/" target="_blank">Watch Owner dispatch</a></p><h3>Assignments by driver</h3><ul><li>James Wilson: 1-69938-A, 1-11703-A, 1-55524-A, 1-11703-B, 1-55524-B</li><li>Sofia Martinez: 1-47870-A, 1-50412-B, 1-68508-A, 1-68508-B</li></ul>
+<h3>Rides needing owner review</h3>
+<div class="table"><table style="white-space:normal"><thead><tr><th>Workbook row</th><th>Ride ID</th><th>Review reason</th></tr></thead><tbody>
+<tr><td>1</td><td>1-9698-A</td><td>Review source instructions</td></tr>
+<tr><td>2</td><td>1-48418-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>3</td><td>1-48280-A</td><td>Review source instructions</td></tr>
+<tr><td>4</td><td>1-61311-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>5</td><td>1-10880-A</td><td>Review source instructions</td></tr>
+<tr><td>6</td><td>1-37560-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>7</td><td>1-25254-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>8</td><td>1-9698-B</td><td>Review source instructions</td></tr>
+<tr><td>9</td><td>1-31040-A</td><td>Review source instructions</td></tr>
+<tr><td>10</td><td>1-10880-B</td><td>Review source instructions</td></tr>
+<tr><td>11</td><td>1-10996-A</td><td>Review source instructions</td></tr>
+<tr><td>12</td><td>1-54400-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>13</td><td>1-68757-A</td><td>Review source instructions</td></tr>
+<tr><td>14</td><td>1-347-A</td><td>Review source instructions</td></tr>
+<tr><td>15</td><td>1-25254-B</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>16</td><td>1-64632-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>17</td><td>1-44765-A</td><td>Review source instructions</td></tr>
+<tr><td>18</td><td>1-68755-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>19</td><td>1-9889-A</td><td>Review source instructions</td></tr>
+<tr><td>20</td><td>1-10230-A</td><td>Review source instructions</td></tr>
+<tr><td>21</td><td>1-31040-B</td><td>Review source instructions</td></tr>
+<tr><td>22</td><td>1-74455-A</td><td>Review source instructions</td></tr>
+<tr><td>23</td><td>1-54893-A</td><td>Review source instructions</td></tr>
+<tr><td>24</td><td>1-43299-A</td><td>Review source instructions</td></tr>
+<tr><td>25</td><td>1-71368-A</td><td>Review source instructions</td></tr>
+<tr><td>26</td><td>1-63474-A</td><td>Review source instructions</td></tr>
+<tr><td>27</td><td>1-70040-A</td><td>Review source instructions</td></tr>
+<tr><td>28</td><td>1-9804-A</td><td>Review source instructions</td></tr>
+<tr><td>29</td><td>1-10996-B</td><td>Review source instructions</td></tr>
+<tr><td>30</td><td>1-67386-A</td><td>Review source instructions</td></tr>
+<tr><td>31</td><td>1-68970-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>32</td><td>1-77495-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>33</td><td>1-9969-A</td><td>Review source instructions</td></tr>
+<tr><td>34</td><td>1-60756-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>35</td><td>1-73426-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>36</td><td>1-79367-A</td><td>Review source instructions</td></tr>
+<tr><td>37</td><td>1-80244-A</td><td>Review source instructions</td></tr>
+<tr><td>38</td><td>1-80249-A</td><td>Review source instructions</td></tr>
+<tr><td>39</td><td>1-38452-A</td><td>Review source instructions</td></tr>
+<tr><td>40</td><td>1-42164-A</td><td>Review source instructions</td></tr>
+<tr><td>41</td><td>1-56118-A</td><td>Review source instructions</td></tr>
+<tr><td>42</td><td>1-79415-A</td><td>Review source instructions</td></tr>
+<tr><td>43</td><td>1-10502-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>44</td><td>1-59909-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>45</td><td>1-66330-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>46</td><td>1-75300-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>47</td><td>1-62041-A</td><td>Review source instructions</td></tr>
+<tr><td>48</td><td>1-63709-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>49</td><td>1-9509-A</td><td>Review source instructions</td></tr>
+<tr><td>50</td><td>1-10335-A</td><td>Review source instructions</td></tr>
+<tr><td>51</td><td>1-63946-A</td><td>Review source instructions</td></tr>
+<tr><td>52</td><td>1-9508-A</td><td>Review source instructions</td></tr>
+<tr><td>53</td><td>1-10054-A</td><td>Review source instructions</td></tr>
+<tr><td>54</td><td>1-10276-A</td><td>Review source instructions</td></tr>
+<tr><td>55</td><td>1-27756-A</td><td>Review source instructions</td></tr>
+<tr><td>56</td><td>1-51816-A</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>57</td><td>1-9753-A</td><td>Review source instructions</td></tr>
+<tr><td>58</td><td>1-9794-A</td><td>Review source instructions</td></tr>
+<tr><td>59</td><td>1-9928-A</td><td>Review source instructions</td></tr>
+<tr><td>60</td><td>1-44765-B</td><td>Review source instructions</td></tr>
+<tr><td>61</td><td>1-46739-A</td><td>Review source instructions</td></tr>
+<tr><td>62</td><td>1-50412-A</td><td>Review source instructions</td></tr>
+<tr><td>63</td><td>1-54893-B</td><td>Review source instructions</td></tr>
+<tr><td>64</td><td>1-56118-B</td><td>Review source instructions</td></tr>
+<tr><td>67</td><td>1-9990-A</td><td>Review source instructions</td></tr>
+<tr><td>68</td><td>1-45800-A</td><td>Review source instructions</td></tr>
+<tr><td>69</td><td>1-69380-A</td><td>Review source instructions</td></tr>
+<tr><td>71</td><td>1-72537-A</td><td>Review source instructions</td></tr>
+<tr><td>72</td><td>1-10138-A</td><td>Review source instructions</td></tr>
+<tr><td>73</td><td>1-36765-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>74</td><td>1-48470-A</td><td>Review source instructions</td></tr>
+<tr><td>75</td><td>1-69001-A</td><td>Review source instructions</td></tr>
+<tr><td>77</td><td>1-53262-A</td><td>Review source instructions</td></tr>
+<tr><td>78</td><td>1-74115-A</td><td>Review source instructions</td></tr>
+<tr><td>79</td><td>1-9510-A</td><td>Review source instructions</td></tr>
+<tr><td>80</td><td>1-9778-A</td><td>Review source instructions</td></tr>
+<tr><td>81</td><td>1-31562-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>82</td><td>1-42386-A</td><td>Review source instructions</td></tr>
+<tr><td>83</td><td>1-70380-A</td><td>Review source instructions</td></tr>
+<tr><td>84</td><td>1-73444-A</td><td>Review source instructions</td></tr>
+<tr><td>85</td><td>1-63474-B</td><td>Review source instructions</td></tr>
+<tr><td>86</td><td>1-49183-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>87</td><td>1-69959-A</td><td>Review source instructions</td></tr>
+<tr><td>88</td><td>1-12124-A</td><td>Review source instructions</td></tr>
+<tr><td>89</td><td>1-9651-A</td><td>Review source instructions</td></tr>
+<tr><td>90</td><td>1-10161-A</td><td>Review source instructions</td></tr>
+<tr><td>91</td><td>1-10226-A</td><td>Review source instructions</td></tr>
+<tr><td>92</td><td>1-10232-A</td><td>Review source instructions</td></tr>
+<tr><td>93</td><td>1-44469-A</td><td>Review source instructions</td></tr>
+<tr><td>94</td><td>1-54396-A</td><td>Review source instructions</td></tr>
+<tr><td>95</td><td>1-68750-A</td><td>Review source instructions</td></tr>
+<tr><td>96</td><td>1-68764-A</td><td>Review source instructions</td></tr>
+<tr><td>97</td><td>1-71368-B</td><td>Review source instructions</td></tr>
+<tr><td>99</td><td>1-48470-B</td><td>Review source instructions</td></tr>
+<tr><td>100</td><td>1-70225-A</td><td>Review source instructions</td></tr>
+<tr><td>102</td><td>1-47538-A</td><td>Review source instructions</td></tr>
+<tr><td>103</td><td>1-73847-A</td><td>Review source instructions</td></tr>
+<tr><td>105</td><td>1-75519-A</td><td>Review source instructions</td></tr>
+<tr><td>107</td><td>1-73426-B</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>108</td><td>1-37166-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>109</td><td>1-58630-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>110</td><td>1-70169-A</td><td>Review source instructions</td></tr>
+<tr><td>111</td><td>1-49391-A</td><td>Review source instructions</td></tr>
+<tr><td>112</td><td>1-42164-B</td><td>Review source instructions</td></tr>
+<tr><td>114</td><td>1-67386-B</td><td>Review source instructions</td></tr>
+<tr><td>115</td><td>1-71147-A</td><td>Review source instructions</td></tr>
+<tr><td>116</td><td>1-72866-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>117</td><td>1-80244-B</td><td>Review source instructions</td></tr>
+<tr><td>118</td><td>1-80249-B</td><td>Review source instructions</td></tr>
+<tr><td>120</td><td>1-71159-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>121</td><td>1-73444-B</td><td>Review source instructions</td></tr>
+<tr><td>122</td><td>1-72401-A</td><td>Review source instructions</td></tr>
+<tr><td>123</td><td>1-74115-B</td><td>Review source instructions</td></tr>
+<tr><td>124</td><td>1-63256-A</td><td>Review source instructions</td></tr>
+<tr><td>125</td><td>1-45800-B</td><td>Review source instructions</td></tr>
+<tr><td>126</td><td>1-70380-B</td><td>Review source instructions</td></tr>
+<tr><td>127</td><td>1-35513-A</td><td>Review source instructions</td></tr>
+<tr><td>129</td><td>1-62041-B</td><td>Review source instructions</td></tr>
+<tr><td>130</td><td>1-69959-B</td><td>Review source instructions</td></tr>
+<tr><td>131</td><td>1-70225-B</td><td>Review source instructions</td></tr>
+<tr><td>132</td><td>1-73847-B</td><td>Review source instructions</td></tr>
+<tr><td>133</td><td>1-75519-B</td><td>Review source instructions</td></tr>
+<tr><td>134</td><td>1-57696-A</td><td>Review source instructions</td></tr>
+<tr><td>135</td><td>1-79877-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>136</td><td>1-35847-A</td><td>Review source instructions</td></tr>
+<tr><td>137</td><td>1-68757-B</td><td>Review source instructions</td></tr>
+<tr><td>138</td><td>1-72678-A</td><td>Review source instructions</td></tr>
+<tr><td>139</td><td>1-9889-B</td><td>Review source instructions</td></tr>
+<tr><td>140</td><td>1-10230-B</td><td>Review source instructions</td></tr>
+<tr><td>141</td><td>1-70067-A</td><td>Review source instructions</td></tr>
+<tr><td>142</td><td>1-75699-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>143</td><td>1-63256-B</td><td>Review source instructions</td></tr>
+<tr><td>144</td><td>1-63369-A</td><td>Review source instructions</td></tr>
+<tr><td>145</td><td>1-70169-B</td><td>Review source instructions</td></tr>
+<tr><td>147</td><td>1-72348-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>149</td><td>1-68203-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>151</td><td>1-42386-B</td><td>Review source instructions</td></tr>
+<tr><td>152</td><td>1-69001-B</td><td>Review source instructions</td></tr>
+<tr><td>153</td><td>1-71147-B</td><td>Review source instructions</td></tr>
+<tr><td>154</td><td>1-75657-A</td><td>Review source instructions</td></tr>
+<tr><td>155</td><td>1-79367-B</td><td>Review source instructions</td></tr>
+<tr><td>156</td><td>1-46795-A</td><td>Review source instructions</td></tr>
+<tr><td>158</td><td>1-59212-A</td><td>Review source instructions</td></tr>
+<tr><td>159</td><td>1-35847-B</td><td>Review source instructions</td></tr>
+<tr><td>160</td><td>1-49391-B</td><td>Review source instructions</td></tr>
+<tr><td>161</td><td>1-57696-B</td><td>Review source instructions</td></tr>
+<tr><td>162</td><td>1-63946-B</td><td>Review source instructions</td></tr>
+<tr><td>163</td><td>1-67886-A</td><td>Review source instructions</td></tr>
+<tr><td>164</td><td>1-72401-B</td><td>Review source instructions</td></tr>
+<tr><td>166</td><td>1-75453-A</td><td>Review source instructions</td></tr>
+<tr><td>167</td><td>1-50694-A</td><td>Review source instructions</td></tr>
+<tr><td>169</td><td>1-68380-A</td><td>Review source instructions</td></tr>
+<tr><td>170</td><td>1-70067-B</td><td>Review source instructions</td></tr>
+<tr><td>171</td><td>1-44469-B</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>172</td><td>1-71387-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>173</td><td>1-72678-B</td><td>Review source instructions</td></tr>
+<tr><td>174</td><td>1-46739-B</td><td>Review source instructions</td></tr>
+<tr><td>175</td><td>1-62032-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>176</td><td>1-75175-A</td><td>Review source instructions</td></tr>
+<tr><td>177</td><td>1-73669-A</td><td>Review source instructions</td></tr>
+<tr><td>178</td><td>1-9928-B</td><td>Review source instructions</td></tr>
+<tr><td>179</td><td>1-10161-B</td><td>Review source instructions</td></tr>
+<tr><td>180</td><td>1-10226-B</td><td>Review source instructions</td></tr>
+<tr><td>181</td><td>1-10232-B</td><td>Review source instructions</td></tr>
+<tr><td>182</td><td>1-54396-B</td><td>Review source instructions</td></tr>
+<tr><td>183</td><td>1-68750-B</td><td>Review source instructions</td></tr>
+<tr><td>184</td><td>1-68764-B</td><td>Review source instructions</td></tr>
+<tr><td>186</td><td>1-74601-A</td><td>Review source instructions</td></tr>
+<tr><td>187</td><td>1-75657-B</td><td>Review source instructions</td></tr>
+<tr><td>189</td><td>1-69199-A</td><td>Review source instructions</td></tr>
+<tr><td>190</td><td>1-75215-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>191</td><td>1-9753-B</td><td>Review source instructions</td></tr>
+<tr><td>192</td><td>1-9794-B</td><td>Review source instructions</td></tr>
+<tr><td>193</td><td>1-9969-B</td><td>Review source instructions</td></tr>
+<tr><td>194</td><td>1-12124-B</td><td>Review source instructions</td></tr>
+<tr><td>195</td><td>1-53262-B</td><td>Review source instructions</td></tr>
+<tr><td>197</td><td>1-62243-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>198</td><td>1-69277-A</td><td>No suitable vehicle free at pickup</td></tr>
+<tr><td>199</td><td>1-74455-B</td><td>Review source instructions</td></tr>
+<tr><td>200</td><td>1-10630-B</td><td>Review source instructions</td></tr>
+<tr><td>202</td><td>1-50906-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>203</td><td>1-69380-B</td><td>Review source instructions</td></tr>
+<tr><td>204</td><td>1-75653-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>205</td><td>1-50728-A</td><td>Review source instructions</td></tr>
+<tr><td>206</td><td>1-59212-B</td><td>Review source instructions</td></tr>
+<tr><td>207</td><td>1-63946-C</td><td>Review source instructions</td></tr>
+<tr><td>208</td><td>1-73669-B</td><td>Review source instructions</td></tr>
+<tr><td>209</td><td>1-75453-B</td><td>Review source instructions</td></tr>
+<tr><td>210</td><td>1-53511-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>212</td><td>1-69199-B</td><td>Review source instructions</td></tr>
+<tr><td>213</td><td>1-47138-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>214</td><td>1-9508-B</td><td>Review source instructions</td></tr>
+<tr><td>215</td><td>1-9509-B</td><td>Review source instructions</td></tr>
+<tr><td>216</td><td>1-9510-B</td><td>Review source instructions</td></tr>
+<tr><td>217</td><td>1-9804-B</td><td>Review source instructions</td></tr>
+<tr><td>218</td><td>1-10054-B</td><td>Review source instructions</td></tr>
+<tr><td>219</td><td>1-10138-B</td><td>Review source instructions</td></tr>
+<tr><td>220</td><td>1-10276-B</td><td>Review source instructions</td></tr>
+<tr><td>221</td><td>1-27756-B</td><td>Review source instructions</td></tr>
+<tr><td>222</td><td>1-46795-B</td><td>Review source instructions</td></tr>
+<tr><td>223</td><td>1-50694-B</td><td>Review source instructions</td></tr>
+<tr><td>225</td><td>1-9651-B</td><td>Review source instructions</td></tr>
+<tr><td>226</td><td>1-9778-B</td><td>Review source instructions</td></tr>
+<tr><td>227</td><td>1-9990-B</td><td>Review source instructions</td></tr>
+<tr><td>228</td><td>1-10335-B</td><td>Review source instructions</td></tr>
+<tr><td>229</td><td>1-38452-B</td><td>Review source instructions</td></tr>
+<tr><td>231</td><td>1-73020-A</td><td>Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>232</td><td>1-50728-B</td><td>Review source instructions</td></tr>
+<tr><td>233</td><td>1-62243-B</td><td>No suitable driver is scheduled for the full ride</td></tr>
+<tr><td>234</td><td>1-347-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>235</td><td>1-26114-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>236</td><td>1-31562-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>237</td><td>1-35513-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>238</td><td>1-36765-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>239</td><td>1-37166-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>240</td><td>1-37560-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>241</td><td>1-43299-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>242</td><td>1-47138-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>243</td><td>1-47870-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>244</td><td>1-48280-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>245</td><td>1-48418-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>246</td><td>1-49183-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>247</td><td>1-50906-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>248</td><td>1-53511-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>249</td><td>1-54400-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>250</td><td>1-58630-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>251</td><td>1-59909-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>252</td><td>1-60643-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>253</td><td>1-60756-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>254</td><td>1-60826-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>255</td><td>1-61311-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>256</td><td>1-61854-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>257</td><td>1-62032-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>258</td><td>1-63369-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>259</td><td>1-63709-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>260</td><td>1-64632-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>261</td><td>1-66330-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>262</td><td>1-67522-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>263</td><td>1-67886-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>264</td><td>1-68203-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>265</td><td>1-68380-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>266</td><td>1-68755-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>267</td><td>1-68970-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>268</td><td>1-69277-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>269</td><td>1-69938-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>270</td><td>1-71284-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>271</td><td>1-72348-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>272</td><td>1-72537-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>273</td><td>1-72866-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>274</td><td>1-73020-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>275</td><td>1-74601-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>276</td><td>1-75175-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>277</td><td>1-75215-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>278</td><td>1-75294-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>279</td><td>1-75300-B</td><td>Missing or zero scheduled time</td></tr>
+<tr><td>280</td><td>1-75653-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>281</td><td>1-75699-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>282</td><td>1-77495-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+<tr><td>283</td><td>1-79415-B</td><td>Missing or zero scheduled time; Review source instructions</td></tr>
+<tr><td>284</td><td>1-79877-B</td><td>Missing or zero scheduled time; Will-call: confirm a pickup time; Review source instructions</td></tr>
+</tbody></table></div></section></main>
+<script>
+const get=id=>document.getElementById(id);
+let rides=[];
+let changingSpeed=false;
+let jumping=false;
+let highlightedRide='';
+let detailReference='';
+let timelineReturn;
+function render(){
+  const counts=new Map([...get('status').options].slice(1).map(option=>[option.value,0]));
+  for(const ride of rides)counts.set(ride.status,counts.get(ride.status)+1);
+  const driverCount=Number(get('simulation-driver-count').textContent);
+  const driversWithRides=new Set(rides.map(ride=>ride.driver).filter(Boolean)).size;
+  const totals=[counts.get('Completed')+' of '+rides.length+' completed',
+    rides.filter(ride=>!ride.driver||!ride.car).length+' unassigned rides',
+    (driverCount-driversWithRides)+' of '+driverCount+' simulation drivers with no rides',
+    ...[...counts].filter(([status])=>status!=='Completed').map(([status,count])=>count+' '+status)];
+  get('summary').replaceChildren(...totals.map(label=>{const span=document.createElement('span');span.textContent=label;return span;}));
+  const visible=rides.filter(r=>(!get('driver').value||r.driver===get('driver').value)&&(!get('status').value||r.status===get('status').value));
+  const focusedRide=document.activeElement.closest('tbody tr')?.dataset.reference;
+  document.querySelector('tbody').replaceChildren(...visible.map(r=>{
+    const row=document.createElement('tr');
+    row.dataset.reference=r.reference;
+    if(r.reference===highlightedRide)row.dataset.highlighted='';
+    for(const value of [r.pickup,r.end,r.reference,r.driver,r.car+' · '+r.type,r.status,r.basis])row.insertCell().textContent=value;
+    const button=document.createElement('button');
+    button.type='button';
+    button.textContent=r.reference;
+    button.setAttribute('aria-label','View times for '+r.reference);
+    button.onclick=()=>showRideTimes(r);
+    row.cells[2].replaceChildren(button);
+    row.onclick=event=>{if(event.target!==button)showRideTimes(r);};
+    return row;
+  }));
+  if(focusedRide)document.querySelector('tbody tr[data-reference="'+CSS.escape(focusedRide)+'"] button')?.focus({preventScroll:true});
+}
+function showRideTimes(ride){
+  detailReference=ride.reference;
+  const table=document.querySelector('.table');
+  timelineReturn={top:table.scrollTop,left:table.scrollLeft,x:window.scrollX,y:window.scrollY,
+    driver:get('driver').value,status:get('status').value};
+  get('ride-times-title').textContent='Ride '+ride.reference;
+  const steps=[
+    ['Offer pending','Offer opens',offerTime(ride.pickup)],
+    ['Heading to pickup','Heading to pickup',offerTime(ride.pickup,10)],
+    ['Onboard','Scheduled pickup',ride.pickup],
+    ['Completed','Scheduled drop-off',ride.end]
+  ];
+  get('ride-times-list').replaceChildren(...steps.map(([status,label,time])=>{
+    const step=document.createElement('li');
+    step.dataset.status=status;
+    const button=document.createElement('button');
+    button.type='button';
+    button.textContent=label+' · '+time+' ET';
+    button.onclick=()=>jumpTo(time,ride.reference,status);
+    step.append(button);
+    return step;
+  }));
+  get('ride-times-error').textContent='';
+  updateRideTimes();
+  get('ride-times').showModal();
+}
+get('ride-times').addEventListener('close',()=>{
+  const {top,left,x,y,driver,status}=timelineReturn;
+  const ride=rides.find(item=>item.reference===detailReference);
+  get('driver').value=driver;
+  get('status').value=status&&status!==ride?.status?'':status;
+  highlightedRide=detailReference;
+  render();
+  const table=document.querySelector('.table');
+  const row=table.querySelector('tr[data-reference="'+CSS.escape(detailReference)+'"]');
+  table.scrollTo(left,top);
+  window.scrollTo(x,y);
+  row?.querySelector('button').focus({preventScroll:true});
+});
+function updateRideTimes(){
+  const ride=rides.find(item=>item.reference===detailReference);
+  if(ride){
+    get('ride-times-status').textContent=ride.status+' · '+get('clock').textContent;
+    for(const step of get('ride-times-list').children){
+      if(step.dataset.status===ride.status)step.setAttribute('aria-current','step');
+      else step.removeAttribute('aria-current');
+    }
+  }
+  for(const button of get('ride-times-list').querySelectorAll('button'))button.disabled=get('jump').disabled;
+}
+async function update(){
+  try{
+    const response=await fetch('/owner/fleet-simulation/progress');
+    if(!response.ok)throw Error('Progress unavailable');
+    const data=await response.json();
+    rides=data.rides.sort((a,b)=>a.pickup.localeCompare(b.pickup)||Number(a.row)-Number(b.row));
+    if(get('driver').options.length===1)for(const driver of [...new Set(rides.map(r=>r.driver))].sort())get('driver').add(new Option(driver,driver));
+    get('clock').textContent=data.clock+' ET · '+data.phase;
+    get('start').disabled=data.phase!=='Paused';
+    get('start').textContent=data.canResume?'Resume':'Start';
+    get('pause').disabled=data.phase!=='Running';
+    get('previous-offer').disabled=!data.canRewindOffer;
+    get('next-offer').disabled=!data.canAdvanceOffer;
+    get('jump-time').min=data.firstTime;
+    get('jump-time').max=data.lastTime;
+    if(!get('jump-time').value)get('jump-time').value=data.phase==='Finished'?data.firstTime:data.clock;
+    get('jump-time').disabled=get('jump').disabled=data.phase!=='Paused'||jumping;
+    get('pickup-time').disabled=get('jump-pickup').disabled=get('jump').disabled;
+    get('ride-id').disabled=get('jump-ride').disabled=get('jump').disabled;
+    updateRideTimes();
+    if(!changingSpeed){get('speed').value=String(data.speed);get('speed').disabled=false;}
+    render();
+  }catch(error){get('error').textContent=error.message;}
+}
+get('driver').onchange=get('status').onchange=render;
+async function control(action){
+  const response=await fetch('/owner/fleet-simulation/'+action,{method:'POST'});
+  if(response.ok){
+    if(action==='next-offer'||action==='previous-offer'){get('driver').value='';get('status').value='Offer pending';}
+    get('error').textContent='';
+    highlightedRide='';
+    if(action==='restart'){get('ride-id').value='';get('status').value='';get('jump-time').value='';get('pickup-time').value='';}
+    await update();
+  }
+  else get('error').textContent='Unable to update simulation';
+}
+get('restart').onclick=()=>control('restart');
+get('start').onclick=()=>control('start');
+get('pause').onclick=()=>control('pause');
+get('previous-offer').onclick=()=>control('previous-offer');
+get('next-offer').onclick=()=>control('next-offer');
+async function jumpTo(time,reference='',status='Offer pending'){
+  if(get('jump').disabled)return;
+  jumping=true;
+  get('jump').disabled=get('jump-pickup').disabled=get('jump-ride').disabled=true;
+  get('error').textContent='';
+  get('ride-times-error').textContent='';
+  updateRideTimes();
+  try{
+    const response=await fetch('/owner/fleet-simulation/jump?time='+time,{method:'POST'});
+    if(!response.ok)throw Error(response.status===409?'Pause the simulation before jumping.':'Choose a time within the simulation day.');
+    highlightedRide=reference;
+    get('driver').value='';
+    get('status').value=status;
+  }catch(error){
+    const errorId=get('ride-times').open?'ride-times-error':'error';
+    get(errorId).textContent=error.message;
+  }
+  finally{jumping=false;await update();}
+  if(highlightedRide===reference&&reference)document.querySelector('tr[data-highlighted]')?.scrollIntoView({block:'nearest'});
+};
+get('jump-form').onsubmit=event=>{
+  event.preventDefault();
+  return jumpTo(get('jump-time').value);
+};
+get('pickup-form').onsubmit=event=>{
+  event.preventDefault();
+  return jumpTo(offerTime(get('pickup-time').value));
+};
+function offerTime(pickup,minutesBeforePickup=15){
+  const [hours,minutes]=pickup.split(':').map(Number);
+  const offerMinute=hours*60+minutes-minutesBeforePickup;
+  const pad=value=>String(value).padStart(2,'0');
+  return pad(Math.floor(offerMinute/60))+':'+pad(offerMinute%60);
+}
+get('ride-form').onsubmit=event=>{
+  event.preventDefault();
+  const reference=get('ride-id').value.trim().toUpperCase();
+  const ride=rides.find(item=>item.reference.toUpperCase()===reference);
+  if(!ride){
+    get('error').textContent='Ride ID not found in this simulation.';
+    return;
+  }
+  return jumpTo(offerTime(ride.pickup),ride.reference);
+};
+get('speed').onchange=async event=>{
+  changingSpeed=true;
+  event.target.disabled=true;
+  try {
+    const response=await fetch('/owner/fleet-simulation/speed?rate='+encodeURIComponent(event.target.value),{method:'POST'});
+    if(!response.ok)throw Error('Unable to change playback speed');
+  } catch(error){get('error').textContent=error.message;}
+  finally{changingSpeed=false;await update();}
+};
+if(location.hash==='#lgtc-preview'){
+  document.querySelector('header').hidden=true;
+  document.querySelector('main > section').hidden=true;
+  get('lgtc-preview').hidden=false;
+  get('advance-approved').onclick=async event=>{
+    const button=event.currentTarget;
+    button.disabled=true;
+    try{
+      const result=await fetch('/owner/advance-approved-test',{method:'POST'});
+      get('approved-status').textContent=await result.text();
+    }catch(error){get('approved-status').textContent=error.message;}
+    finally{button.disabled=false;}
+  };
+}else if(location.hash!=='#dispatch-269'){update();setInterval(update,1000);}
+</script>
+<script>
+if(location.hash==='#dispatch-269'){
+  const data={"start":225,"finish":1060,"drivers":["Test driver 1","Test driver 2","Test driver 3","Test driver 4","Test driver 5","Test driver 6","Test driver 7","Test driver 8","Test driver 9","Test driver 10","Test driver 11","Test driver 12","Test driver 13","Test driver 14","Test driver 15","Test driver 16","Test driver 17","Test driver 18","Test driver 19","Test driver 20"],"rides":[{"reference":"1-9698-A","pickup":"04:00","end":"04:50","accessible":false,"events":[[225,"Offer pending","Test driver 1"],[225.5,"Heading to pickup","Test driver 1"],[240,"Onboard","Test driver 1"],[290,"Completed","Test driver 1"]]},{"reference":"1-48418-A","pickup":"04:00","end":"04:50","accessible":false,"events":[[225,"Offer pending","Test driver 2"],[225.5,"Heading to pickup","Test driver 2"],[240,"Onboard","Test driver 2"],[290,"Completed","Test driver 2"]]},{"reference":"1-48280-A","pickup":"04:15","end":"04:50","accessible":false,"events":[[240,"Offer pending","Test driver 3"],[240.5,"Heading to pickup","Test driver 3"],[255,"Onboard","Test driver 3"],[290,"Completed","Test driver 3"]]},{"reference":"1-61311-A","pickup":"04:15","end":"04:50","accessible":false,"events":[[240,"Offer pending","Test driver 4"],[240.5,"Heading to pickup","Test driver 4"],[255,"Onboard","Test driver 4"],[290,"Completed","Test driver 4"]]},{"reference":"1-10880-A","pickup":"04:35","end":"05:05","accessible":false,"events":[[260,"Offer pending","Test driver 5"],[260.5,"Heading to pickup","Test driver 5"],[275,"Onboard","Test driver 5"],[305,"Completed","Test driver 5"]]},{"reference":"1-37560-A","pickup":"04:55","end":"05:35","accessible":false,"events":[[280,"Offer pending","Test driver 6"],[280.5,"Heading to pickup","Test driver 6"],[295,"Onboard","Test driver 6"],[335,"Completed","Test driver 6"]]},{"reference":"1-25254-A","pickup":"05:05","end":"05:50","accessible":false,"events":[[290,"Offer pending","Test driver 1"],[290.5,"Heading to pickup","Test driver 1"],[305,"Onboard","Test driver 1"],[350,"Completed","Test driver 1"]]},{"reference":"1-9698-B","pickup":"05:15","end":"06:05","accessible":false,"events":[[300,"Offer pending","Test driver 2"],[300.5,"Heading to pickup","Test driver 2"],[315,"Onboard","Test driver 2"],[365,"Completed","Test driver 2"]]},{"reference":"1-31040-A","pickup":"05:15","end":"05:50","accessible":false,"events":[[300,"Offer pending","Test driver 3"],[300.5,"Heading to pickup","Test driver 3"],[315,"Onboard","Test driver 3"],[350,"Completed","Test driver 3"]]},{"reference":"1-10880-B","pickup":"05:30","end":"05:59","accessible":false,"events":[[315,"Offer pending","Test driver 4"],[315.5,"Heading to pickup","Test driver 4"],[330,"Onboard","Test driver 4"],[359,"Completed","Test driver 4"]]},{"reference":"1-10996-A","pickup":"06:00","end":"06:25","accessible":true,"events":[[345,"Offer pending","Test driver 5"],[345.5,"Heading to pickup","Test driver 5"],[360,"Onboard","Test driver 5"],[385,"Completed","Test driver 5"]]},{"reference":"1-54400-A","pickup":"06:00","end":"06:50","accessible":false,"events":[[345,"Offer pending","Test driver 6"],[345.5,"Heading to pickup","Test driver 6"],[360,"Onboard","Test driver 6"],[410,"Completed","Test driver 6"]]},{"reference":"1-68757-A","pickup":"06:00","end":"06:35","accessible":false,"events":[[345,"Offer pending","Test driver 7"],[345.5,"Heading to pickup","Test driver 7"],[360,"Onboard","Test driver 7"],[395,"Completed","Test driver 7"]]},{"reference":"1-347-A","pickup":"06:05","end":"06:45","accessible":true,"events":[[350,"Offer pending","Test driver 1"],[350.5,"Heading to pickup","Test driver 1"],[365,"Onboard","Test driver 1"],[405,"Completed","Test driver 1"]]},{"reference":"1-25254-B","pickup":"06:05","end":"06:55","accessible":false,"events":[[350,"Offer pending","Test driver 3"],[350.5,"Heading to pickup","Test driver 3"],[365,"Onboard","Test driver 3"],[415,"Completed","Test driver 3"]]},{"reference":"1-64632-A","pickup":"06:05","end":"06:50","accessible":false,"events":[[350,"Offer pending","Test driver 8"],[350.5,"Heading to pickup","Test driver 8"],[365,"Onboard","Test driver 8"],[410,"Completed","Test driver 8"]]},{"reference":"1-44765-A","pickup":"06:10","end":"06:45","accessible":true,"events":[[359,"Offer pending","Test driver 4"],[359.5,"Heading to pickup","Test driver 4"],[370,"Onboard","Test driver 4"],[405,"Completed","Test driver 4"]]},{"reference":"1-68755-A","pickup":"06:10","end":"06:50","accessible":false,"events":[[355,"Offer pending","Test driver 9"],[355.5,"Heading to pickup","Test driver 9"],[370,"Onboard","Test driver 9"],[410,"Completed","Test driver 9"]]},{"reference":"1-9889-A","pickup":"06:15","end":"06:50","accessible":false,"events":[[360,"Offer pending","Test driver 10"],[360.5,"Heading to pickup","Test driver 10"],[375,"Onboard","Test driver 10"],[410,"Completed","Test driver 10"]]},{"reference":"1-10230-A","pickup":"06:15","end":"06:50","accessible":false,"events":[[360,"Offer pending","Test driver 11"],[360.5,"Heading to pickup","Test driver 11"],[375,"Onboard","Test driver 11"],[410,"Completed","Test driver 11"]]},{"reference":"1-31040-B","pickup":"06:15","end":"06:50","accessible":false,"events":[[360,"Offer pending","Test driver 12"],[360.5,"Heading to pickup","Test driver 12"],[375,"Onboard","Test driver 12"],[410,"Completed","Test driver 12"]]},{"reference":"1-74455-A","pickup":"06:15","end":"06:50","accessible":false,"events":[[360,"Offer pending","Test driver 13"],[360.5,"Heading to pickup","Test driver 13"],[375,"Onboard","Test driver 13"],[410,"Completed","Test driver 13"]]},{"reference":"1-54893-A","pickup":"06:30","end":"07:05","accessible":false,"events":[[375,"Offer pending","Test driver 2"],[375.5,"Heading to pickup","Test driver 2"],[390,"Onboard","Test driver 2"],[425,"Completed","Test driver 2"]]},{"reference":"1-43299-A","pickup":"06:35","end":"07:15","accessible":true,"events":[[385,"Offer pending","Test driver 5"],[385.5,"Heading to pickup","Test driver 5"],[395,"Onboard","Test driver 5"],[435,"Completed","Test driver 5"]]},{"reference":"1-71368-A","pickup":"06:35","end":"07:20","accessible":false,"events":[[380,"Offer pending","Test driver 14"],[380.5,"Heading to pickup","Test driver 14"],[395,"Onboard","Test driver 14"],[440,"Completed","Test driver 14"]]},{"reference":"1-63474-A","pickup":"06:40","end":"07:30","accessible":true,"events":[[400,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-70040-A","pickup":"06:45","end":"07:50","accessible":false,"events":[[390,"Offer pending","Test driver 15"],[390.5,"Heading to pickup","Test driver 15"],[405,"Onboard","Test driver 15"],[470,"Completed","Test driver 15"]]},{"reference":"1-9804-A","pickup":"07:00","end":"08:00","accessible":true,"events":[[405,"Offer pending","Test driver 1"],[405.5,"Heading to pickup","Test driver 1"],[420,"Onboard","Test driver 1"],[480,"Completed","Test driver 1"]]},{"reference":"1-10996-B","pickup":"07:00","end":"07:24","accessible":true,"events":[[405,"Offer pending","Test driver 4"],[405.5,"Heading to pickup","Test driver 4"],[420,"Onboard","Test driver 4"],[444,"Completed","Test driver 4"]]},{"reference":"1-67386-A","pickup":"07:00","end":"07:50","accessible":false,"events":[[405,"Offer pending","Test driver 7"],[405.5,"Heading to pickup","Test driver 7"],[420,"Onboard","Test driver 7"],[470,"Completed","Test driver 7"]]},{"reference":"1-68970-A","pickup":"07:05","end":"07:45","accessible":false,"events":[[410,"Offer pending","Test driver 6"],[410.5,"Heading to pickup","Test driver 6"],[425,"Onboard","Test driver 6"],[465,"Completed","Test driver 6"]]},{"reference":"1-77495-A","pickup":"07:05","end":"07:45","accessible":true,"events":[[415,"Offer pending","Test driver 3"],[415.5,"Heading to pickup","Test driver 3"],[425,"Onboard","Test driver 3"],[465,"Completed","Test driver 3"]]},{"reference":"1-9969-A","pickup":"07:10","end":"07:50","accessible":false,"events":[[415,"Offer pending","Test driver 8"],[415.5,"Heading to pickup","Test driver 8"],[430,"Onboard","Test driver 8"],[470,"Completed","Test driver 8"]]},{"reference":"1-60756-A","pickup":"07:10","end":"07:50","accessible":false,"events":[[415,"Offer pending","Test driver 9"],[415.5,"Heading to pickup","Test driver 9"],[430,"Onboard","Test driver 9"],[470,"Completed","Test driver 9"]]},{"reference":"1-73426-A","pickup":"07:10","end":"08:05","accessible":false,"events":[[415,"Offer pending","Test driver 10"],[415.5,"Heading to pickup","Test driver 10"],[430,"Onboard","Test driver 10"],[485,"Completed","Test driver 10"]]},{"reference":"1-79367-A","pickup":"07:10","end":"08:00","accessible":true,"events":[[425,"Offer pending","Test driver 2"],[425.5,"Heading to pickup","Test driver 2"],[430,"Onboard","Test driver 2"],[480,"Completed","Test driver 2"]]},{"reference":"1-80244-A","pickup":"07:10","end":"07:50","accessible":false,"events":[[415,"Offer pending","Test driver 11"],[415.5,"Heading to pickup","Test driver 11"],[430,"Onboard","Test driver 11"],[470,"Completed","Test driver 11"]]},{"reference":"1-80249-A","pickup":"07:10","end":"07:50","accessible":false,"events":[[415,"Offer pending","Test driver 12"],[415.5,"Heading to pickup","Test driver 12"],[430,"Onboard","Test driver 12"],[470,"Completed","Test driver 12"]]},{"reference":"1-38452-A","pickup":"07:15","end":"08:05","accessible":false,"events":[[420,"Offer pending","Test driver 13"],[420.5,"Heading to pickup","Test driver 13"],[435,"Onboard","Test driver 13"],[485,"Completed","Test driver 13"]]},{"reference":"1-42164-A","pickup":"07:15","end":"08:45","accessible":true,"events":[[435,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-56118-A","pickup":"07:15","end":"07:50","accessible":false,"events":[[420,"Offer pending","Test driver 16"],[420.5,"Heading to pickup","Test driver 16"],[435,"Onboard","Test driver 16"],[470,"Completed","Test driver 16"]]},{"reference":"1-79415-A","pickup":"07:15","end":"07:50","accessible":false,"events":[[420,"Offer pending","Test driver 17"],[420.5,"Heading to pickup","Test driver 17"],[435,"Onboard","Test driver 17"],[470,"Completed","Test driver 17"]]},{"reference":"1-10502-A","pickup":"07:20","end":"08:20","accessible":false,"events":[[425,"Offer pending","Test driver 18"],[425.5,"Heading to pickup","Test driver 18"],[440,"Onboard","Test driver 18"],[500,"Completed","Test driver 18"]]},{"reference":"1-59909-A","pickup":"07:20","end":"08:00","accessible":false,"events":[[425,"Offer pending","Test driver 19"],[425.5,"Heading to pickup","Test driver 19"],[440,"Onboard","Test driver 19"],[480,"Completed","Test driver 19"]]},{"reference":"1-66330-A","pickup":"07:20","end":"08:00","accessible":false,"events":[[425,"Offer pending","Test driver 20"],[425.5,"Heading to pickup","Test driver 20"],[440,"Onboard","Test driver 20"],[480,"Completed","Test driver 20"]]},{"reference":"1-75300-A","pickup":"07:20","end":"07:50","accessible":false,"events":[[435,"Offer pending","Test driver 5"],[435.5,"Heading to pickup","Test driver 5"],[440,"Onboard","Test driver 5"],[470,"Completed","Test driver 5"]]},{"reference":"1-62041-A","pickup":"07:25","end":"07:50","accessible":false,"events":[[440,"Offer pending","Test driver 14"],[440.5,"Heading to pickup","Test driver 14"],[445,"Onboard","Test driver 14"],[470,"Completed","Test driver 14"]]},{"reference":"1-63709-A","pickup":"07:25","end":"08:05","accessible":false,"events":[[444,"Offer pending","Test driver 4"],[444.5,"Heading to pickup","Test driver 4"],[445,"Onboard","Test driver 4"],[485,"Completed","Test driver 4"]]},{"reference":"1-9509-A","pickup":"07:30","end":"08:20","accessible":false,"events":[[450,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-10335-A","pickup":"07:30","end":"08:20","accessible":false,"events":[[450,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-63946-A","pickup":"07:35","end":"08:45","accessible":true,"events":[[455,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-9508-A","pickup":"07:45","end":"08:20","accessible":false,"events":[[465,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-10054-A","pickup":"07:45","end":"08:20","accessible":false,"events":[[465,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-10276-A","pickup":"07:45","end":"08:20","accessible":false,"events":[[465,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-27756-A","pickup":"07:45","end":"08:20","accessible":false,"events":[[465,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-51816-A","pickup":"07:45","end":"08:35","accessible":false,"events":[[465,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-9753-A","pickup":"08:00","end":"08:50","accessible":false,"events":[[465,"Offer pending","Test driver 3"],[465.5,"Heading to pickup","Test driver 3"],[480,"Onboard","Test driver 3"],[530,"Completed","Test driver 3"]]},{"reference":"1-9794-A","pickup":"08:00","end":"08:50","accessible":false,"events":[[465,"Offer pending","Test driver 6"],[465.5,"Heading to pickup","Test driver 6"],[480,"Onboard","Test driver 6"],[530,"Completed","Test driver 6"]]},{"reference":"1-9928-A","pickup":"08:00","end":"08:50","accessible":false,"events":[[470,"Offer pending","Test driver 5"],[470.5,"Heading to pickup","Test driver 5"],[480,"Onboard","Test driver 5"],[530,"Completed","Test driver 5"]]},{"reference":"1-44765-B","pickup":"08:00","end":"08:45","accessible":true,"events":[[480,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-46739-A","pickup":"08:05","end":"08:50","accessible":false,"events":[[470,"Offer pending","Test driver 7"],[470.5,"Heading to pickup","Test driver 7"],[485,"Onboard","Test driver 7"],[530,"Completed","Test driver 7"]]},{"reference":"1-50412-A","pickup":"08:05","end":"08:35","accessible":false,"events":[[470,"Offer pending","Test driver 8"],[470.5,"Heading to pickup","Test driver 8"],[485,"Onboard","Test driver 8"],[515,"Completed","Test driver 8"]]},{"reference":"1-54893-B","pickup":"08:05","end":"08:40","accessible":false,"events":[[470,"Offer pending","Test driver 9"],[470.5,"Heading to pickup","Test driver 9"],[485,"Onboard","Test driver 9"],[520,"Completed","Test driver 9"]]},{"reference":"1-56118-B","pickup":"08:05","end":"08:40","accessible":false,"events":[[470,"Offer pending","Test driver 11"],[470.5,"Heading to pickup","Test driver 11"],[485,"Onboard","Test driver 11"],[520,"Completed","Test driver 11"]]},{"reference":"1-60826-A","pickup":"08:05","end":"08:50","accessible":false,"events":[[470,"Offer pending","Test driver 12"],[470.5,"Heading to pickup","Test driver 12"],[485,"Onboard","Test driver 12"],[530,"Completed","Test driver 12"]]},{"reference":"1-69093-A","pickup":"08:05","end":"08:50","accessible":false,"events":[[470,"Offer pending","Test driver 14"],[470.5,"Heading to pickup","Test driver 14"],[485,"Onboard","Test driver 14"],[530,"Completed","Test driver 14"]]},{"reference":"1-9990-A","pickup":"08:10","end":"09:00","accessible":false,"events":[[475,"Offer pending","Test driver 15"],[475.5,"Heading to pickup","Test driver 15"],[490,"Onboard","Test driver 15"],[540,"Completed","Test driver 15"]]},{"reference":"1-45800-A","pickup":"08:10","end":"08:50","accessible":false,"events":[[475,"Offer pending","Test driver 16"],[475.5,"Heading to pickup","Test driver 16"],[490,"Onboard","Test driver 16"],[530,"Completed","Test driver 16"]]},{"reference":"1-69380-A","pickup":"08:10","end":"08:50","accessible":false,"events":[[475,"Offer pending","Test driver 17"],[475.5,"Heading to pickup","Test driver 17"],[490,"Onboard","Test driver 17"],[530,"Completed","Test driver 17"]]},{"reference":"1-69938-A","pickup":"08:10","end":"08:50","accessible":false,"events":[[480,"Offer pending","Test driver 1"],[480.5,"Heading to pickup","Test driver 1"],[490,"Onboard","Test driver 1"],[530,"Completed","Test driver 1"]]},{"reference":"1-72537-A","pickup":"08:10","end":"08:55","accessible":false,"events":[[480,"Offer pending","Test driver 2"],[480.5,"Heading to pickup","Test driver 2"],[490,"Onboard","Test driver 2"],[535,"Completed","Test driver 2"]]},{"reference":"1-10138-A","pickup":"08:15","end":"08:50","accessible":false,"events":[[480,"Offer pending","Test driver 19"],[480.5,"Heading to pickup","Test driver 19"],[495,"Onboard","Test driver 19"],[530,"Completed","Test driver 19"]]},{"reference":"1-36765-A","pickup":"08:15","end":"08:50","accessible":false,"events":[[480,"Offer pending","Test driver 20"],[480.5,"Heading to pickup","Test driver 20"],[495,"Onboard","Test driver 20"],[530,"Completed","Test driver 20"]]},{"reference":"1-48470-A","pickup":"08:15","end":"08:50","accessible":false,"events":[[485,"Offer pending","Test driver 4"],[485.5,"Heading to pickup","Test driver 4"],[495,"Onboard","Test driver 4"],[530,"Completed","Test driver 4"]]},{"reference":"1-69001-A","pickup":"08:15","end":"08:50","accessible":false,"events":[[485,"Offer pending","Test driver 10"],[485.5,"Heading to pickup","Test driver 10"],[495,"Onboard","Test driver 10"],[530,"Completed","Test driver 10"]]},{"reference":"1-47870-A","pickup":"08:20","end":"08:50","accessible":false,"events":[[485,"Offer pending","Test driver 13"],[485.5,"Heading to pickup","Test driver 13"],[500,"Onboard","Test driver 13"],[530,"Completed","Test driver 13"]]},{"reference":"1-53262-A","pickup":"08:20","end":"09:15","accessible":true,"events":[[500,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-74115-A","pickup":"08:20","end":"08:50","accessible":false,"events":[[500,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-9510-A","pickup":"08:30","end":"09:00","accessible":false,"events":[[500,"Offer pending","Test driver 18"],[500.5,"Heading to pickup","Test driver 18"],[510,"Onboard","Test driver 18"],[540,"Completed","Test driver 18"]]},{"reference":"1-9778-A","pickup":"08:30","end":"09:15","accessible":false,"events":[[510,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-31562-A","pickup":"08:35","end":"09:10","accessible":false,"events":[[515,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-42386-A","pickup":"08:40","end":"09:50","accessible":false,"events":[[515,"Offer pending","Test driver 8"],[515.5,"Heading to pickup","Test driver 8"],[520,"Onboard","Test driver 8"],[590,"Completed","Test driver 8"]]},{"reference":"1-70380-A","pickup":"08:40","end":"09:20","accessible":false,"events":[[520,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-73444-A","pickup":"08:40","end":"09:35","accessible":false,"events":[[520,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-63474-B","pickup":"08:45","end":"09:45","accessible":true,"events":[[525,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-49183-A","pickup":"08:50","end":"09:20","accessible":false,"events":[[520,"Offer pending","Test driver 9"],[520.5,"Heading to pickup","Test driver 9"],[530,"Onboard","Test driver 9"],[560,"Completed","Test driver 9"]]},{"reference":"1-69959-A","pickup":"08:50","end":"09:45","accessible":true,"events":[[530,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-12124-A","pickup":"08:55","end":"09:35","accessible":false,"events":[[520,"Offer pending","Test driver 11"],[520.5,"Heading to pickup","Test driver 11"],[535,"Onboard","Test driver 11"],[575,"Completed","Test driver 11"]]},{"reference":"1-9651-A","pickup":"09:00","end":"09:40","accessible":false,"events":[[530,"Offer pending","Test driver 1"],[530.5,"Heading to pickup","Test driver 1"],[540,"Onboard","Test driver 1"],[580,"Completed","Test driver 1"]]},{"reference":"1-10161-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 3"],[530.5,"Heading to pickup","Test driver 3"],[540,"Onboard","Test driver 3"],[590,"Completed","Test driver 3"]]},{"reference":"1-10226-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 4"],[530.5,"Heading to pickup","Test driver 4"],[540,"Onboard","Test driver 4"],[590,"Completed","Test driver 4"]]},{"reference":"1-10232-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 5"],[530.5,"Heading to pickup","Test driver 5"],[540,"Onboard","Test driver 5"],[590,"Completed","Test driver 5"]]},{"reference":"1-44469-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 6"],[530.5,"Heading to pickup","Test driver 6"],[540,"Onboard","Test driver 6"],[590,"Completed","Test driver 6"]]},{"reference":"1-54396-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 7"],[530.5,"Heading to pickup","Test driver 7"],[540,"Onboard","Test driver 7"],[590,"Completed","Test driver 7"]]},{"reference":"1-68750-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 10"],[530.5,"Heading to pickup","Test driver 10"],[540,"Onboard","Test driver 10"],[590,"Completed","Test driver 10"]]},{"reference":"1-68764-A","pickup":"09:00","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 12"],[530.5,"Heading to pickup","Test driver 12"],[540,"Onboard","Test driver 12"],[590,"Completed","Test driver 12"]]},{"reference":"1-71368-B","pickup":"09:00","end":"09:35","accessible":false,"events":[[530,"Offer pending","Test driver 13"],[530.5,"Heading to pickup","Test driver 13"],[540,"Onboard","Test driver 13"],[575,"Completed","Test driver 13"]]},{"reference":"1-75294-A","pickup":"09:05","end":"09:50","accessible":false,"events":[[530,"Offer pending","Test driver 14"],[530.5,"Heading to pickup","Test driver 14"],[545,"Onboard","Test driver 14"],[590,"Completed","Test driver 14"]]},{"reference":"1-48470-B","pickup":"09:15","end":"09:50","accessible":false,"events":[[540,"Offer pending","Test driver 2"],[540.5,"Heading to pickup","Test driver 2"],[555,"Onboard","Test driver 2"],[590,"Completed","Test driver 2"]]},{"reference":"1-70225-A","pickup":"09:15","end":"10:05","accessible":false,"events":[[540,"Offer pending","Test driver 15"],[540.5,"Heading to pickup","Test driver 15"],[555,"Onboard","Test driver 15"],[605,"Completed","Test driver 15"]]},{"reference":"1-10630-A","pickup":"09:20","end":"09:50","accessible":false,"events":[[545,"Offer pending","Test driver 16"],[545.5,"Heading to pickup","Test driver 16"],[560,"Onboard","Test driver 16"],[590,"Completed","Test driver 16"]]},{"reference":"1-47538-A","pickup":"09:20","end":"10:05","accessible":false,"events":[[545,"Offer pending","Test driver 17"],[545.5,"Heading to pickup","Test driver 17"],[560,"Onboard","Test driver 17"],[605,"Completed","Test driver 17"]]},{"reference":"1-73847-A","pickup":"09:25","end":"10:05","accessible":false,"events":[[550,"Offer pending","Test driver 18"],[550.5,"Heading to pickup","Test driver 18"],[565,"Onboard","Test driver 18"],[605,"Completed","Test driver 18"]]},{"reference":"1-11703-A","pickup":"09:30","end":"09:50","accessible":false,"events":[[555,"Offer pending","Test driver 19"],[555.5,"Heading to pickup","Test driver 19"],[570,"Onboard","Test driver 19"],[590,"Completed","Test driver 19"]]},{"reference":"1-75519-A","pickup":"09:30","end":"10:05","accessible":false,"events":[[555,"Offer pending","Test driver 20"],[555.5,"Heading to pickup","Test driver 20"],[570,"Onboard","Test driver 20"],[605,"Completed","Test driver 20"]]},{"reference":"1-50412-B","pickup":"09:45","end":"10:20","accessible":false,"events":[[570,"Offer pending","Test driver 9"],[570.5,"Heading to pickup","Test driver 9"],[585,"Onboard","Test driver 9"],[620,"Completed","Test driver 9"]]},{"reference":"1-73426-B","pickup":"09:45","end":"10:35","accessible":false,"events":[[575,"Offer pending","Test driver 11"],[575.5,"Heading to pickup","Test driver 11"],[585,"Onboard","Test driver 11"],[635,"Completed","Test driver 11"]]},{"reference":"1-37166-A","pickup":"09:50","end":"10:35","accessible":false,"events":[[575,"Offer pending","Test driver 13"],[575.5,"Heading to pickup","Test driver 13"],[590,"Onboard","Test driver 13"],[635,"Completed","Test driver 13"]]},{"reference":"1-58630-A","pickup":"09:50","end":"10:20","accessible":false,"events":[[580,"Offer pending","Test driver 1"],[580.5,"Heading to pickup","Test driver 1"],[590,"Onboard","Test driver 1"],[620,"Completed","Test driver 1"]]},{"reference":"1-70169-A","pickup":"09:50","end":"10:50","accessible":false,"events":[[590,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-49391-A","pickup":"09:55","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 2"],[590.5,"Heading to pickup","Test driver 2"],[595,"Onboard","Test driver 2"],[635,"Completed","Test driver 2"]]},{"reference":"1-42164-B","pickup":"10:00","end":"11:12","accessible":true,"events":[[590,"Offer pending","Test driver 3"],[590.5,"Heading to pickup","Test driver 3"],[600,"Onboard","Test driver 3"],[672,"Completed","Test driver 3"]]},{"reference":"1-51816-B","pickup":"10:00","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 4"],[590.5,"Heading to pickup","Test driver 4"],[600,"Onboard","Test driver 4"],[635,"Completed","Test driver 4"]]},{"reference":"1-67386-B","pickup":"10:00","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 5"],[590.5,"Heading to pickup","Test driver 5"],[600,"Onboard","Test driver 5"],[635,"Completed","Test driver 5"]]},{"reference":"1-71147-A","pickup":"10:00","end":"10:50","accessible":false,"events":[[590,"Offer pending","Test driver 6"],[590.5,"Heading to pickup","Test driver 6"],[600,"Onboard","Test driver 6"],[650,"Completed","Test driver 6"]]},{"reference":"1-72866-A","pickup":"10:00","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 7"],[590.5,"Heading to pickup","Test driver 7"],[600,"Onboard","Test driver 7"],[635,"Completed","Test driver 7"]]},{"reference":"1-80244-B","pickup":"10:00","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 8"],[590.5,"Heading to pickup","Test driver 8"],[600,"Onboard","Test driver 8"],[635,"Completed","Test driver 8"]]},{"reference":"1-80249-B","pickup":"10:00","end":"10:35","accessible":false,"events":[[590,"Offer pending","Test driver 10"],[590.5,"Heading to pickup","Test driver 10"],[600,"Onboard","Test driver 10"],[635,"Completed","Test driver 10"]]},{"reference":"1-69093-B","pickup":"10:15","end":"10:50","accessible":false,"events":[[600,"Offer pending","Test driver 12"],[600.5,"Heading to pickup","Test driver 12"],[615,"Onboard","Test driver 12"],[650,"Completed","Test driver 12"]]},{"reference":"1-71159-A","pickup":"10:15","end":"10:50","accessible":false,"events":[[600,"Offer pending","Test driver 14"],[600.5,"Heading to pickup","Test driver 14"],[615,"Onboard","Test driver 14"],[650,"Completed","Test driver 14"]]},{"reference":"1-73444-B","pickup":"10:15","end":"11:05","accessible":false,"events":[[600,"Offer pending","Test driver 16"],[600.5,"Heading to pickup","Test driver 16"],[615,"Onboard","Test driver 16"],[665,"Completed","Test driver 16"]]},{"reference":"1-72401-A","pickup":"10:25","end":"11:00","accessible":false,"events":[[610,"Offer pending","Test driver 15"],[610.5,"Heading to pickup","Test driver 15"],[625,"Onboard","Test driver 15"],[660,"Completed","Test driver 15"]]},{"reference":"1-74115-B","pickup":"10:30","end":"11:05","accessible":false,"events":[[615,"Offer pending","Test driver 17"],[615.5,"Heading to pickup","Test driver 17"],[630,"Onboard","Test driver 17"],[665,"Completed","Test driver 17"]]},{"reference":"1-63256-A","pickup":"10:40","end":"11:20","accessible":false,"events":[[625,"Offer pending","Test driver 1"],[625.5,"Heading to pickup","Test driver 1"],[640,"Onboard","Test driver 1"],[680,"Completed","Test driver 1"]]},{"reference":"1-45800-B","pickup":"10:45","end":"11:20","accessible":false,"events":[[630,"Offer pending","Test driver 9"],[630.5,"Heading to pickup","Test driver 9"],[645,"Onboard","Test driver 9"],[680,"Completed","Test driver 9"]]},{"reference":"1-70380-B","pickup":"10:45","end":"11:20","accessible":false,"events":[[630,"Offer pending","Test driver 18"],[630.5,"Heading to pickup","Test driver 18"],[645,"Onboard","Test driver 18"],[680,"Completed","Test driver 18"]]},{"reference":"1-35513-A","pickup":"10:55","end":"11:35","accessible":false,"events":[[640,"Offer pending","Test driver 2"],[640.5,"Heading to pickup","Test driver 2"],[655,"Onboard","Test driver 2"],[695,"Completed","Test driver 2"]]},{"reference":"1-61854-A","pickup":"10:55","end":"11:35","accessible":false,"events":[[640,"Offer pending","Test driver 4"],[640.5,"Heading to pickup","Test driver 4"],[655,"Onboard","Test driver 4"],[695,"Completed","Test driver 4"]]},{"reference":"1-62041-B","pickup":"11:00","end":"11:35","accessible":false,"events":[[645,"Offer pending","Test driver 5"],[645.5,"Heading to pickup","Test driver 5"],[660,"Onboard","Test driver 5"],[695,"Completed","Test driver 5"]]},{"reference":"1-69959-B","pickup":"11:00","end":"12:00","accessible":true,"events":[[650,"Offer pending","Test driver 6"],[650.5,"Heading to pickup","Test driver 6"],[660,"Onboard","Test driver 6"],[720,"Completed","Test driver 6"]]},{"reference":"1-70225-B","pickup":"11:00","end":"11:35","accessible":false,"events":[[645,"Offer pending","Test driver 7"],[645.5,"Heading to pickup","Test driver 7"],[660,"Onboard","Test driver 7"],[695,"Completed","Test driver 7"]]},{"reference":"1-73847-B","pickup":"11:00","end":"11:35","accessible":false,"events":[[645,"Offer pending","Test driver 8"],[645.5,"Heading to pickup","Test driver 8"],[660,"Onboard","Test driver 8"],[695,"Completed","Test driver 8"]]},{"reference":"1-75519-B","pickup":"11:00","end":"11:35","accessible":false,"events":[[645,"Offer pending","Test driver 10"],[645.5,"Heading to pickup","Test driver 10"],[660,"Onboard","Test driver 10"],[695,"Completed","Test driver 10"]]},{"reference":"1-347-B","pickup":"11:00","end":"11:40","accessible":true,"events":[[660,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-57696-A","pickup":"11:10","end":"11:50","accessible":false,"events":[[655,"Offer pending","Test driver 11"],[655.5,"Heading to pickup","Test driver 11"],[670,"Onboard","Test driver 11"],[710,"Completed","Test driver 11"]]},{"reference":"1-79877-A","pickup":"11:10","end":"11:50","accessible":false,"events":[[655,"Offer pending","Test driver 12"],[655.5,"Heading to pickup","Test driver 12"],[670,"Onboard","Test driver 12"],[710,"Completed","Test driver 12"]]},{"reference":"1-26114-B","pickup":"11:10","end":"11:50","accessible":false,"events":[[655,"Offer pending","Test driver 13"],[655.5,"Heading to pickup","Test driver 13"],[670,"Onboard","Test driver 13"],[710,"Completed","Test driver 13"]]},{"reference":"1-35847-A","pickup":"11:15","end":"11:50","accessible":false,"events":[[660,"Offer pending","Test driver 14"],[660.5,"Heading to pickup","Test driver 14"],[675,"Onboard","Test driver 14"],[710,"Completed","Test driver 14"]]},{"reference":"1-68757-B","pickup":"11:15","end":"11:50","accessible":false,"events":[[660,"Offer pending","Test driver 15"],[660.5,"Heading to pickup","Test driver 15"],[675,"Onboard","Test driver 15"],[710,"Completed","Test driver 15"]]},{"reference":"1-72678-A","pickup":"11:15","end":"11:35","accessible":false,"events":[[660,"Offer pending","Test driver 19"],[660.5,"Heading to pickup","Test driver 19"],[675,"Onboard","Test driver 19"],[695,"Completed","Test driver 19"]]},{"reference":"1-31562-B","pickup":"11:20","end":"12:00","accessible":false,"events":[[665,"Offer pending","Test driver 16"],[665.5,"Heading to pickup","Test driver 16"],[680,"Onboard","Test driver 16"],[720,"Completed","Test driver 16"]]},{"reference":"1-9889-B","pickup":"11:30","end":"12:05","accessible":false,"events":[[675,"Offer pending","Test driver 3"],[675.5,"Heading to pickup","Test driver 3"],[690,"Onboard","Test driver 3"],[725,"Completed","Test driver 3"]]},{"reference":"1-10230-B","pickup":"11:30","end":"13:35","accessible":false,"events":[[675,"Offer pending","Test driver 17"],[675.5,"Heading to pickup","Test driver 17"],[690,"Onboard","Test driver 17"],[815,"Completed","Test driver 17"]]},{"reference":"1-35513-B","pickup":"11:30","end":"12:10","accessible":false,"events":[[675,"Offer pending","Test driver 20"],[675.5,"Heading to pickup","Test driver 20"],[690,"Onboard","Test driver 20"],[730,"Completed","Test driver 20"]]},{"reference":"1-70067-A","pickup":"11:40","end":"12:15","accessible":false,"events":[[685,"Offer pending","Test driver 1"],[685.5,"Heading to pickup","Test driver 1"],[700,"Onboard","Test driver 1"],[735,"Completed","Test driver 1"]]},{"reference":"1-36765-B","pickup":"11:40","end":"12:20","accessible":false,"events":[[685,"Offer pending","Test driver 9"],[685.5,"Heading to pickup","Test driver 9"],[700,"Onboard","Test driver 9"],[740,"Completed","Test driver 9"]]},{"reference":"1-75699-A","pickup":"11:50","end":"12:50","accessible":false,"events":[[695,"Offer pending","Test driver 2"],[695.5,"Heading to pickup","Test driver 2"],[710,"Onboard","Test driver 2"],[770,"Completed","Test driver 2"]]},{"reference":"1-37166-B","pickup":"11:50","end":"12:30","accessible":false,"events":[[695,"Offer pending","Test driver 4"],[695.5,"Heading to pickup","Test driver 4"],[710,"Onboard","Test driver 4"],[750,"Completed","Test driver 4"]]},{"reference":"1-63256-B","pickup":"12:00","end":"12:50","accessible":false,"events":[[705,"Offer pending","Test driver 5"],[705.5,"Heading to pickup","Test driver 5"],[720,"Onboard","Test driver 5"],[770,"Completed","Test driver 5"]]},{"reference":"1-63369-A","pickup":"12:00","end":"12:45","accessible":false,"events":[[705,"Offer pending","Test driver 7"],[705.5,"Heading to pickup","Test driver 7"],[720,"Onboard","Test driver 7"],[765,"Completed","Test driver 7"]]},{"reference":"1-70169-B","pickup":"12:00","end":"13:20","accessible":false,"events":[[705,"Offer pending","Test driver 8"],[705.5,"Heading to pickup","Test driver 8"],[720,"Onboard","Test driver 8"],[800,"Completed","Test driver 8"]]},{"reference":"1-37560-B","pickup":"12:00","end":"12:40","accessible":false,"events":[[705,"Offer pending","Test driver 10"],[705.5,"Heading to pickup","Test driver 10"],[720,"Onboard","Test driver 10"],[760,"Completed","Test driver 10"]]},{"reference":"1-71159-B","pickup":"12:05","end":"12:40","accessible":false,"events":[[710,"Offer pending","Test driver 11"],[710.5,"Heading to pickup","Test driver 11"],[725,"Onboard","Test driver 11"],[760,"Completed","Test driver 11"]]},{"reference":"1-72348-A","pickup":"12:05","end":"12:50","accessible":false,"events":[[710,"Offer pending","Test driver 12"],[710.5,"Heading to pickup","Test driver 12"],[725,"Onboard","Test driver 12"],[770,"Completed","Test driver 12"]]},{"reference":"1-59861-A","pickup":"12:10","end":"12:55","accessible":false,"events":[[715,"Offer pending","Test driver 13"],[715.5,"Heading to pickup","Test driver 13"],[730,"Onboard","Test driver 13"],[775,"Completed","Test driver 13"]]},{"reference":"1-43299-B","pickup":"12:10","end":"12:50","accessible":true,"events":[[720,"Offer pending","Test driver 6"],[720.5,"Heading to pickup","Test driver 6"],[730,"Onboard","Test driver 6"],[770,"Completed","Test driver 6"]]},{"reference":"1-68203-A","pickup":"12:15","end":"13:00","accessible":false,"events":[[720,"Offer pending","Test driver 14"],[720.5,"Heading to pickup","Test driver 14"],[735,"Onboard","Test driver 14"],[780,"Completed","Test driver 14"]]},{"reference":"1-47138-B","pickup":"12:20","end":"13:00","accessible":false,"events":[[725,"Offer pending","Test driver 3"],[725.5,"Heading to pickup","Test driver 3"],[740,"Onboard","Test driver 3"],[780,"Completed","Test driver 3"]]},{"reference":"1-68508-A","pickup":"12:25","end":"13:00","accessible":false,"events":[[730,"Offer pending","Test driver 15"],[730.5,"Heading to pickup","Test driver 15"],[745,"Onboard","Test driver 15"],[780,"Completed","Test driver 15"]]},{"reference":"1-42386-B","pickup":"12:30","end":"13:27","accessible":false,"events":[[735,"Offer pending","Test driver 1"],[735.5,"Heading to pickup","Test driver 1"],[750,"Onboard","Test driver 1"],[807,"Completed","Test driver 1"]]},{"reference":"1-69001-B","pickup":"12:30","end":"13:00","accessible":false,"events":[[735,"Offer pending","Test driver 16"],[735.5,"Heading to pickup","Test driver 16"],[750,"Onboard","Test driver 16"],[780,"Completed","Test driver 16"]]},{"reference":"1-71147-B","pickup":"12:30","end":"13:20","accessible":false,"events":[[735,"Offer pending","Test driver 18"],[735.5,"Heading to pickup","Test driver 18"],[750,"Onboard","Test driver 18"],[800,"Completed","Test driver 18"]]},{"reference":"1-75657-A","pickup":"12:30","end":"13:05","accessible":false,"events":[[735,"Offer pending","Test driver 19"],[735.5,"Heading to pickup","Test driver 19"],[750,"Onboard","Test driver 19"],[785,"Completed","Test driver 19"]]},{"reference":"1-79367-B","pickup":"12:30","end":"13:15","accessible":true,"events":[[750,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-47870-B","pickup":"12:30","end":"13:10","accessible":false,"events":[[735,"Offer pending","Test driver 20"],[735.5,"Heading to pickup","Test driver 20"],[750,"Onboard","Test driver 20"],[790,"Completed","Test driver 20"]]},{"reference":"1-46795-A","pickup":"12:35","end":"13:20","accessible":false,"events":[[740,"Offer pending","Test driver 9"],[740.5,"Heading to pickup","Test driver 9"],[755,"Onboard","Test driver 9"],[800,"Completed","Test driver 9"]]},{"reference":"1-48280-B","pickup":"12:40","end":"13:20","accessible":false,"events":[[750,"Offer pending","Test driver 4"],[750.5,"Heading to pickup","Test driver 4"],[760,"Onboard","Test driver 4"],[800,"Completed","Test driver 4"]]},{"reference":"1-55524-A","pickup":"12:45","end":"13:20","accessible":false,"events":[[760,"Offer pending","Test driver 10"],[760.5,"Heading to pickup","Test driver 10"],[765,"Onboard","Test driver 10"],[800,"Completed","Test driver 10"]]},{"reference":"1-59212-A","pickup":"12:45","end":"13:45","accessible":true,"events":[[765,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-48418-B","pickup":"12:50","end":"13:30","accessible":false,"events":[[760,"Offer pending","Test driver 11"],[760.5,"Heading to pickup","Test driver 11"],[770,"Onboard","Test driver 11"],[810,"Completed","Test driver 11"]]},{"reference":"1-35847-B","pickup":"13:00","end":"13:26","accessible":false,"events":[[765,"Offer pending","Test driver 7"],[765.5,"Heading to pickup","Test driver 7"],[780,"Onboard","Test driver 7"],[806,"Completed","Test driver 7"]]},{"reference":"1-49391-B","pickup":"13:00","end":"13:50","accessible":false,"events":[[770,"Offer pending","Test driver 2"],[770.5,"Heading to pickup","Test driver 2"],[780,"Onboard","Test driver 2"],[830,"Completed","Test driver 2"]]},{"reference":"1-57696-B","pickup":"13:00","end":"13:50","accessible":false,"events":[[770,"Offer pending","Test driver 5"],[770.5,"Heading to pickup","Test driver 5"],[780,"Onboard","Test driver 5"],[830,"Completed","Test driver 5"]]},{"reference":"1-63946-B","pickup":"13:00","end":"13:38","accessible":true,"events":[[770,"Offer pending","Test driver 6"],[770.5,"Heading to pickup","Test driver 6"],[780,"Onboard","Test driver 6"],[818,"Completed","Test driver 6"]]},{"reference":"1-67886-A","pickup":"13:00","end":"13:50","accessible":false,"events":[[770,"Offer pending","Test driver 12"],[770.5,"Heading to pickup","Test driver 12"],[780,"Onboard","Test driver 12"],[830,"Completed","Test driver 12"]]},{"reference":"1-72401-B","pickup":"13:00","end":"13:35","accessible":false,"events":[[775,"Offer pending","Test driver 13"],[775.5,"Heading to pickup","Test driver 13"],[780,"Onboard","Test driver 13"],[815,"Completed","Test driver 13"]]},{"reference":"1-49183-B","pickup":"13:00","end":"13:40","accessible":false,"events":[[780,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-71284-A","pickup":"13:05","end":"13:40","accessible":false,"events":[[780,"Offer pending","Test driver 3"],[780.5,"Heading to pickup","Test driver 3"],[785,"Onboard","Test driver 3"],[820,"Completed","Test driver 3"]]},{"reference":"1-75453-A","pickup":"13:10","end":"13:50","accessible":false,"events":[[780,"Offer pending","Test driver 14"],[780.5,"Heading to pickup","Test driver 14"],[790,"Onboard","Test driver 14"],[830,"Completed","Test driver 14"]]},{"reference":"1-50906-B","pickup":"13:10","end":"13:50","accessible":false,"events":[[780,"Offer pending","Test driver 15"],[780.5,"Heading to pickup","Test driver 15"],[790,"Onboard","Test driver 15"],[830,"Completed","Test driver 15"]]},{"reference":"1-50694-A","pickup":"13:15","end":"13:50","accessible":false,"events":[[780,"Offer pending","Test driver 16"],[780.5,"Heading to pickup","Test driver 16"],[795,"Onboard","Test driver 16"],[830,"Completed","Test driver 16"]]},{"reference":"1-67522-A","pickup":"13:15","end":"13:50","accessible":false,"events":[[785,"Offer pending","Test driver 19"],[785.5,"Heading to pickup","Test driver 19"],[795,"Onboard","Test driver 19"],[830,"Completed","Test driver 19"]]},{"reference":"1-68380-A","pickup":"13:15","end":"13:50","accessible":false,"events":[[790,"Offer pending","Test driver 20"],[790.5,"Heading to pickup","Test driver 20"],[795,"Onboard","Test driver 20"],[830,"Completed","Test driver 20"]]},{"reference":"1-70067-B","pickup":"13:20","end":"13:55","accessible":false,"events":[[800,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-53511-B","pickup":"13:20","end":"14:00","accessible":false,"events":[[800,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-44469-B","pickup":"13:30","end":"14:20","accessible":false,"events":[[800,"Offer pending","Test driver 4"],[800.5,"Heading to pickup","Test driver 4"],[810,"Onboard","Test driver 4"],[860,"Completed","Test driver 4"]]},{"reference":"1-71387-A","pickup":"13:30","end":"14:30","accessible":false,"events":[[800,"Offer pending","Test driver 8"],[800.5,"Heading to pickup","Test driver 8"],[810,"Onboard","Test driver 8"],[870,"Completed","Test driver 8"]]},{"reference":"1-72678-B","pickup":"13:30","end":"14:05","accessible":false,"events":[[800,"Offer pending","Test driver 9"],[800.5,"Heading to pickup","Test driver 9"],[810,"Onboard","Test driver 9"],[845,"Completed","Test driver 9"]]},{"reference":"1-54400-B","pickup":"13:30","end":"14:10","accessible":false,"events":[[800,"Offer pending","Test driver 10"],[800.5,"Heading to pickup","Test driver 10"],[810,"Onboard","Test driver 10"],[850,"Completed","Test driver 10"]]},{"reference":"1-46739-B","pickup":"13:35","end":"14:20","accessible":false,"events":[[800,"Offer pending","Test driver 18"],[800.5,"Heading to pickup","Test driver 18"],[815,"Onboard","Test driver 18"],[860,"Completed","Test driver 18"]]},{"reference":"1-62032-A","pickup":"13:35","end":"14:22","accessible":false,"events":[[806,"Offer pending","Test driver 7"],[806.5,"Heading to pickup","Test driver 7"],[815,"Onboard","Test driver 7"],[862,"Completed","Test driver 7"]]},{"reference":"1-75175-A","pickup":"13:35","end":"14:20","accessible":false,"events":[[807,"Offer pending","Test driver 1"],[807.5,"Heading to pickup","Test driver 1"],[815,"Onboard","Test driver 1"],[860,"Completed","Test driver 1"]]},{"reference":"1-58630-B","pickup":"13:40","end":"14:20","accessible":false,"events":[[810,"Offer pending","Test driver 11"],[810.5,"Heading to pickup","Test driver 11"],[820,"Onboard","Test driver 11"],[860,"Completed","Test driver 11"]]},{"reference":"1-73669-A","pickup":"13:45","end":"14:20","accessible":false,"events":[[815,"Offer pending","Test driver 13"],[815.5,"Heading to pickup","Test driver 13"],[825,"Onboard","Test driver 13"],[860,"Completed","Test driver 13"]]},{"reference":"1-59909-B","pickup":"13:50","end":"14:30","accessible":false,"events":[[815,"Offer pending","Test driver 17"],[815.5,"Heading to pickup","Test driver 17"],[830,"Onboard","Test driver 17"],[870,"Completed","Test driver 17"]]},{"reference":"1-9928-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[825,"Offer pending","Test driver 3"],[825.5,"Heading to pickup","Test driver 3"],[840,"Onboard","Test driver 3"],[890,"Completed","Test driver 3"]]},{"reference":"1-10161-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[825,"Offer pending","Test driver 6"],[825.5,"Heading to pickup","Test driver 6"],[840,"Onboard","Test driver 6"],[890,"Completed","Test driver 6"]]},{"reference":"1-10226-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 2"],[830.5,"Heading to pickup","Test driver 2"],[840,"Onboard","Test driver 2"],[890,"Completed","Test driver 2"]]},{"reference":"1-10232-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 5"],[830.5,"Heading to pickup","Test driver 5"],[840,"Onboard","Test driver 5"],[890,"Completed","Test driver 5"]]},{"reference":"1-54396-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 12"],[830.5,"Heading to pickup","Test driver 12"],[840,"Onboard","Test driver 12"],[890,"Completed","Test driver 12"]]},{"reference":"1-68750-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 14"],[830.5,"Heading to pickup","Test driver 14"],[840,"Onboard","Test driver 14"],[890,"Completed","Test driver 14"]]},{"reference":"1-68764-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 15"],[830.5,"Heading to pickup","Test driver 15"],[840,"Onboard","Test driver 15"],[890,"Completed","Test driver 15"]]},{"reference":"1-70040-B","pickup":"14:00","end":"14:50","accessible":false,"events":[[830,"Offer pending","Test driver 16"],[830.5,"Heading to pickup","Test driver 16"],[840,"Onboard","Test driver 16"],[890,"Completed","Test driver 16"]]},{"reference":"1-74601-A","pickup":"14:00","end":"14:35","accessible":false,"events":[[830,"Offer pending","Test driver 19"],[830.5,"Heading to pickup","Test driver 19"],[840,"Onboard","Test driver 19"],[875,"Completed","Test driver 19"]]},{"reference":"1-75657-B","pickup":"14:00","end":"14:35","accessible":false,"events":[[830,"Offer pending","Test driver 20"],[830.5,"Heading to pickup","Test driver 20"],[840,"Onboard","Test driver 20"],[875,"Completed","Test driver 20"]]},{"reference":"1-60643-B","pickup":"14:00","end":"14:40","accessible":false,"events":[[840,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-59861-B","pickup":"14:05","end":"14:55","accessible":false,"events":[[845,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-69199-A","pickup":"14:10","end":"14:50","accessible":false,"events":[[845,"Offer pending","Test driver 9"],[845.5,"Heading to pickup","Test driver 9"],[850,"Onboard","Test driver 9"],[890,"Completed","Test driver 9"]]},{"reference":"1-75215-A","pickup":"14:10","end":"14:50","accessible":false,"events":[[850,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-60756-B","pickup":"14:10","end":"14:50","accessible":false,"events":[[850,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-60826-B","pickup":"14:20","end":"15:00","accessible":false,"events":[[850,"Offer pending","Test driver 10"],[850.5,"Heading to pickup","Test driver 10"],[860,"Onboard","Test driver 10"],[900,"Completed","Test driver 10"]]},{"reference":"1-9753-B","pickup":"14:30","end":"15:20","accessible":false,"events":[[860,"Offer pending","Test driver 1"],[860.5,"Heading to pickup","Test driver 1"],[870,"Onboard","Test driver 1"],[920,"Completed","Test driver 1"]]},{"reference":"1-9794-B","pickup":"14:30","end":"15:20","accessible":false,"events":[[860,"Offer pending","Test driver 4"],[860.5,"Heading to pickup","Test driver 4"],[870,"Onboard","Test driver 4"],[920,"Completed","Test driver 4"]]},{"reference":"1-9969-B","pickup":"14:30","end":"15:11","accessible":false,"events":[[860,"Offer pending","Test driver 11"],[860.5,"Heading to pickup","Test driver 11"],[870,"Onboard","Test driver 11"],[911,"Completed","Test driver 11"]]},{"reference":"1-12124-B","pickup":"14:30","end":"15:20","accessible":false,"events":[[860,"Offer pending","Test driver 13"],[860.5,"Heading to pickup","Test driver 13"],[870,"Onboard","Test driver 13"],[920,"Completed","Test driver 13"]]},{"reference":"1-53262-B","pickup":"14:30","end":"15:06","accessible":true,"events":[[870,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-68508-B","pickup":"14:30","end":"15:05","accessible":false,"events":[[860,"Offer pending","Test driver 18"],[860.5,"Heading to pickup","Test driver 18"],[870,"Onboard","Test driver 18"],[905,"Completed","Test driver 18"]]},{"reference":"1-61311-B","pickup":"14:30","end":"15:10","accessible":false,"events":[[862,"Offer pending","Test driver 7"],[862.5,"Heading to pickup","Test driver 7"],[870,"Onboard","Test driver 7"],[910,"Completed","Test driver 7"]]},{"reference":"1-62243-A","pickup":"14:35","end":"15:10","accessible":false,"events":[[870,"Offer pending","Test driver 8"],[870.5,"Heading to pickup","Test driver 8"],[875,"Onboard","Test driver 8"],[910,"Completed","Test driver 8"]]},{"reference":"1-69277-A","pickup":"14:35","end":"15:20","accessible":false,"events":[[870,"Offer pending","Test driver 17"],[870.5,"Heading to pickup","Test driver 17"],[875,"Onboard","Test driver 17"],[920,"Completed","Test driver 17"]]},{"reference":"1-74455-B","pickup":"14:35","end":"15:10","accessible":false,"events":[[875,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-10630-B","pickup":"14:40","end":"15:15","accessible":false,"events":[[875,"Offer pending","Test driver 19"],[875.5,"Heading to pickup","Test driver 19"],[880,"Onboard","Test driver 19"],[915,"Completed","Test driver 19"]]},{"reference":"1-11703-B","pickup":"14:40","end":"15:30","accessible":false,"events":[[875,"Offer pending","Test driver 20"],[875.5,"Heading to pickup","Test driver 20"],[880,"Onboard","Test driver 20"],[930,"Completed","Test driver 20"]]},{"reference":"1-50906-A","pickup":"14:40","end":"15:20","accessible":false,"events":[[880,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-69380-B","pickup":"14:40","end":"15:15","accessible":false,"events":[[880,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-61854-B","pickup":"14:40","end":"15:20","accessible":false,"events":[[880,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-75653-A","pickup":"14:45","end":"15:20","accessible":false,"events":[[885,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-62032-B","pickup":"14:50","end":"15:30","accessible":false,"events":[[890,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-50728-A","pickup":"14:55","end":"15:40","accessible":false,"events":[[890,"Offer pending","Test driver 2"],[890.5,"Heading to pickup","Test driver 2"],[895,"Onboard","Test driver 2"],[940,"Completed","Test driver 2"]]},{"reference":"1-59212-B","pickup":"15:00","end":"16:00","accessible":true,"events":[[890,"Offer pending","Test driver 3"],[890.5,"Heading to pickup","Test driver 3"],[900,"Onboard","Test driver 3"],[960,"Completed","Test driver 3"]]},{"reference":"1-63946-C","pickup":"15:00","end":"16:30","accessible":true,"events":[[890,"Offer pending","Test driver 5"],[890.5,"Heading to pickup","Test driver 5"],[900,"Onboard","Test driver 5"],[990,"Completed","Test driver 5"]]},{"reference":"1-73669-B","pickup":"15:00","end":"15:35","accessible":false,"events":[[890,"Offer pending","Test driver 6"],[890.5,"Heading to pickup","Test driver 6"],[900,"Onboard","Test driver 6"],[935,"Completed","Test driver 6"]]},{"reference":"1-75453-B","pickup":"15:00","end":"15:35","accessible":false,"events":[[890,"Offer pending","Test driver 9"],[890.5,"Heading to pickup","Test driver 9"],[900,"Onboard","Test driver 9"],[935,"Completed","Test driver 9"]]},{"reference":"1-63369-B","pickup":"15:00","end":"15:40","accessible":false,"events":[[890,"Offer pending","Test driver 12"],[890.5,"Heading to pickup","Test driver 12"],[900,"Onboard","Test driver 12"],[940,"Completed","Test driver 12"]]},{"reference":"1-53511-A","pickup":"15:05","end":"15:50","accessible":false,"events":[[890,"Offer pending","Test driver 14"],[890.5,"Heading to pickup","Test driver 14"],[905,"Onboard","Test driver 14"],[950,"Completed","Test driver 14"]]},{"reference":"1-63709-B","pickup":"15:10","end":"15:50","accessible":false,"events":[[895,"Offer pending","Test driver 15"],[895.5,"Heading to pickup","Test driver 15"],[910,"Onboard","Test driver 15"],[950,"Completed","Test driver 15"]]},{"reference":"1-10502-B","pickup":"15:15","end":"16:05","accessible":false,"events":[[900,"Offer pending","Test driver 10"],[900.5,"Heading to pickup","Test driver 10"],[915,"Onboard","Test driver 10"],[965,"Completed","Test driver 10"]]},{"reference":"1-69199-B","pickup":"15:20","end":"16:10","accessible":false,"events":[[905,"Offer pending","Test driver 16"],[905.5,"Heading to pickup","Test driver 16"],[920,"Onboard","Test driver 16"],[970,"Completed","Test driver 16"]]},{"reference":"1-64632-B","pickup":"15:20","end":"16:00","accessible":false,"events":[[905,"Offer pending","Test driver 18"],[905.5,"Heading to pickup","Test driver 18"],[920,"Onboard","Test driver 18"],[960,"Completed","Test driver 18"]]},{"reference":"1-47138-A","pickup":"15:25","end":"16:05","accessible":false,"events":[[910,"Offer pending","Test driver 7"],[910.5,"Heading to pickup","Test driver 7"],[925,"Onboard","Test driver 7"],[965,"Completed","Test driver 7"]]},{"reference":"1-9508-B","pickup":"15:30","end":"16:01","accessible":false,"events":[[915,"Offer pending","Test driver 8"],[915.5,"Heading to pickup","Test driver 8"],[930,"Onboard","Test driver 8"],[961,"Completed","Test driver 8"]]},{"reference":"1-9509-B","pickup":"15:30","end":"16:20","accessible":false,"events":[[915,"Offer pending","Test driver 11"],[915.5,"Heading to pickup","Test driver 11"],[930,"Onboard","Test driver 11"],[980,"Completed","Test driver 11"]]},{"reference":"1-9510-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[915,"Offer pending","Test driver 19"],[915.5,"Heading to pickup","Test driver 19"],[930,"Onboard","Test driver 19"],[965,"Completed","Test driver 19"]]},{"reference":"1-9804-B","pickup":"15:30","end":"16:30","accessible":true,"events":[[920,"Offer pending","Test driver 1"],[920.5,"Heading to pickup","Test driver 1"],[930,"Onboard","Test driver 1"],[990,"Completed","Test driver 1"]]},{"reference":"1-10054-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[920,"Offer pending","Test driver 4"],[920.5,"Heading to pickup","Test driver 4"],[930,"Onboard","Test driver 4"],[965,"Completed","Test driver 4"]]},{"reference":"1-10138-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[920,"Offer pending","Test driver 13"],[920.5,"Heading to pickup","Test driver 13"],[930,"Onboard","Test driver 13"],[965,"Completed","Test driver 13"]]},{"reference":"1-10276-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[920,"Offer pending","Test driver 17"],[920.5,"Heading to pickup","Test driver 17"],[930,"Onboard","Test driver 17"],[965,"Completed","Test driver 17"]]},{"reference":"1-27756-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[930,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-46795-B","pickup":"15:30","end":"16:03","accessible":false,"events":[[930,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-50694-B","pickup":"15:30","end":"16:05","accessible":false,"events":[[930,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-66330-B","pickup":"15:30","end":"16:10","accessible":false,"events":[[930,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-71387-B","pickup":"15:40","end":"17:00","accessible":false,"events":[[930,"Offer pending","Test driver 20"],[930.5,"Heading to pickup","Test driver 20"],[940,"Onboard","Test driver 20"],[1020,"Completed","Test driver 20"]]},{"reference":"1-67522-B","pickup":"15:40","end":"16:20","accessible":false,"events":[[935,"Offer pending","Test driver 6"],[935.5,"Heading to pickup","Test driver 6"],[940,"Onboard","Test driver 6"],[980,"Completed","Test driver 6"]]},{"reference":"1-67886-B","pickup":"15:50","end":"16:30","accessible":false,"events":[[935,"Offer pending","Test driver 9"],[935.5,"Heading to pickup","Test driver 9"],[950,"Onboard","Test driver 9"],[990,"Completed","Test driver 9"]]},{"reference":"1-9651-B","pickup":"16:00","end":"16:50","accessible":false,"events":[[945,"Offer pending","Test driver 2"],[945.5,"Heading to pickup","Test driver 2"],[960,"Onboard","Test driver 2"],[1010,"Completed","Test driver 2"]]},{"reference":"1-9778-B","pickup":"16:00","end":"16:30","accessible":false,"events":[[945,"Offer pending","Test driver 12"],[945.5,"Heading to pickup","Test driver 12"],[960,"Onboard","Test driver 12"],[990,"Completed","Test driver 12"]]},{"reference":"1-9990-B","pickup":"16:00","end":"16:50","accessible":false,"events":[[950,"Offer pending","Test driver 14"],[950.5,"Heading to pickup","Test driver 14"],[960,"Onboard","Test driver 14"],[1010,"Completed","Test driver 14"]]},{"reference":"1-10335-B","pickup":"16:00","end":"16:35","accessible":false,"events":[[950,"Offer pending","Test driver 15"],[950.5,"Heading to pickup","Test driver 15"],[960,"Onboard","Test driver 15"],[995,"Completed","Test driver 15"]]},{"reference":"1-38452-B","pickup":"16:00","end":"16:50","accessible":false,"events":[[960,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-55524-B","pickup":"16:00","end":"16:35","accessible":false,"events":[[960,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-68203-B","pickup":"16:00","end":"16:40","accessible":false,"events":[[960,"Needs Attention","","No eligible driver can reach this pickup on time. Check driver availability and location."]]},{"reference":"1-68380-B","pickup":"16:10","end":"16:50","accessible":false,"events":[[960,"Offer pending","Test driver 3"],[960.5,"Heading to pickup","Test driver 3"],[970,"Onboard","Test driver 3"],[1010,"Completed","Test driver 3"]]},{"reference":"1-68755-B","pickup":"16:20","end":"17:00","accessible":false,"events":[[965,"Offer pending","Test driver 4"],[965.5,"Heading to pickup","Test driver 4"],[980,"Onboard","Test driver 4"],[1020,"Completed","Test driver 4"]]},{"reference":"1-68970-B","pickup":"16:30","end":"17:10","accessible":false,"events":[[975,"Offer pending","Test driver 7"],[975.5,"Heading to pickup","Test driver 7"],[990,"Onboard","Test driver 7"],[1030,"Completed","Test driver 7"]]},{"reference":"1-73020-A","pickup":"16:35","end":"17:20","accessible":false,"events":[[980,"Offer pending","Test driver 6"],[980.5,"Heading to pickup","Test driver 6"],[995,"Onboard","Test driver 6"],[1040,"Completed","Test driver 6"]]},{"reference":"1-69277-B","pickup":"16:40","end":"17:20","accessible":false,"events":[[985,"Offer pending","Test driver 8"],[985.5,"Heading to pickup","Test driver 8"],[1000,"Onboard","Test driver 8"],[1040,"Completed","Test driver 8"]]},{"reference":"1-69938-B","pickup":"16:50","end":"17:30","accessible":false,"events":[[995,"Offer pending","Test driver 1"],[995.5,"Heading to pickup","Test driver 1"],[1010,"Onboard","Test driver 1"],[1050,"Completed","Test driver 1"]]},{"reference":"1-71284-B","pickup":"17:00","end":"17:40","accessible":false,"events":[[1005,"Offer pending","Test driver 5"],[1005.5,"Heading to pickup","Test driver 5"],[1020,"Onboard","Test driver 5"],[1060,"Completed","Test driver 5"]]},{"reference":"1-50728-B","pickup":"17:05","end":"17:40","accessible":false,"events":[[1010,"Offer pending","Test driver 2"],[1010.5,"Heading to pickup","Test driver 2"],[1025,"Onboard","Test driver 2"],[1060,"Completed","Test driver 2"]]}]};
+  const get=id=>document.getElementById(id);
+  const moneyClock=time=>String(Math.floor(time/60)).padStart(2,'0')+':'+String(Math.floor(time%60)).padStart(2,'0');
+  const start=get('dispatch-start');
+  let time=data.start, elapsed=0, runningAt=null;
+  document.querySelector('header').hidden=true;
+  document.querySelector('main > section').hidden=true;
+  get('dispatch-269').hidden=false;
+  for(const driver of data.drivers)get('dispatch-driver').add(new Option(driver));
+  function renderDispatch(){
+    if(runningAt!==null)time=Math.min(data.finish,data.start+(elapsed+performance.now()-runningAt)/250);
+    if(time===data.finish)runningAt=null;
+    start.disabled=time===data.finish;
+    start.textContent=runningAt!==null?'Pause dispatch':time===data.start?'Start dispatch':'Resume dispatch';
+    get('dispatch-clock').textContent=moneyClock(time)+' ET · '+(time===data.finish?'Finished':runningAt===null?'Paused':'Running');
+    const rows=data.rides.map(ride=>({ride,event:ride.events.findLast(event=>event[0]<=time)}));
+    const counts=rows.reduce((acc,{event})=>{
+      const status=event?.[1];
+      if(status==='Completed')acc.completed++;
+      if(status==='Needs Attention')acc.attention++;
+      if(!event?.[2]||status==='Offer pending')acc.unassigned++;
+      return acc;
+    },{completed:0,attention:0,unassigned:0});
+    get('dispatch-counts').textContent=counts.completed+' completed · '+counts.unassigned+' unassigned rides · '+counts.attention+' need owner action';
+    const driver=get('dispatch-driver').value, attention=get('dispatch-attention').checked;
+    get('dispatch-rows').replaceChildren(...rows.filter(({event})=>(!driver||event?.[2]===driver)&&(!attention||event?.[1]==='Needs Attention')).map(({ride,event})=>{
+      const row=document.createElement('tr');
+      for(const text of [ride.pickup,ride.reference,event?.[2]||'—',event?.[1]||'Unassigned',event?.[3]||'—'])row.insertCell().textContent=text;
+      return row;
+    }));
+  }
+  start.onclick=()=>{
+    if(runningAt===null)runningAt=performance.now();
+    else{elapsed+=performance.now()-runningAt;runningAt=null;time=Math.min(data.finish,data.start+elapsed/250);}
+    renderDispatch();
+  };
+  get('dispatch-reset').onclick=()=>{runningAt=null;time=data.start;elapsed=0;renderDispatch();};
+  get('dispatch-driver').onchange=get('dispatch-attention').onchange=renderDispatch;
+  renderDispatch();
+  setInterval(()=>{if(runningAt!==null)renderDispatch();},125);
+}
+</script></html>
