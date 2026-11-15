@@ -21,9 +21,10 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer, ownerRecords } = {}) {
   const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
   const privateDemo=hostedDemo&&!publicDemo;
+  if (ownerRecords && !privateDemo) throw Error('MongoDB Owner records require private hosted mode.');
   if (sheetFile && (hostedDemo || pilotConfig || roadMatrix || !dbPath)) throw Error('Sheet testing requires a separate local database.');
   if (hostedDemo && (dbPath!==':memory:' || roadMatrix || pilotConfig)) {
     throw Error('The hosted demo needs an in-memory demo database.');
@@ -429,6 +430,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       "; connect-src 'self'" + googleCsp.connect + "; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" + googleCsp.extra);
     try {
       const url = new URL(req.url, 'http://localhost'), user = session(req);
+      if (ownerRecords && req.method === 'GET' && url.pathname === '/owner/records') {
+        requireRole(user,'owner');
+        res.setHeader('Cache-Control','private, no-store');
+        res.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'");
+        res.setHeader('X-Frame-Options','SAMEORIGIN');
+        return await ownerRecords(url,res);
+      }
       if (req.method !== 'GET') {
         const origin = req.headers.origin;
         if (origin && new URL(origin).host !== req.headers.host) return json(res, 403, { error: 'Cross-site requests are not allowed' });
@@ -450,7 +458,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,mongoOwnerRecords:!!ownerRecords&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!pilot||user?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,

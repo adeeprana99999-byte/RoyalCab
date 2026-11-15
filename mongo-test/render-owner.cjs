@@ -31,6 +31,11 @@ function ownerHandler(db, username, password) {
     if (req.method !== 'GET' || !['/', '/owner/', '/owner/records'].includes(url.pathname)) {
       res.writeHead(404); return res.end('Page not found.');
     }
+    return renderOwnerRecords(db, url, res);
+  };
+}
+
+async function renderOwnerRecords(db, url, res) {
     const selected = url.searchParams.get('show') || 'lgtc_rides';
     if (!Object.hasOwn(sections, selected)) {
       res.writeHead(404); return res.end('Record type not found.');
@@ -58,7 +63,6 @@ th,td{text-align:left;padding:10px;border-bottom:1px solid #31445e}th{text-trans
     } catch {
       res.writeHead(503); return res.end('MongoDB records are temporarily unavailable.');
     }
-  };
 }
 
 function start() {
@@ -76,4 +80,4 @@ function start() {
 }
 
 if (require.main === module) start();
-module.exports = { ownerHandler };
+module.exports = { ownerHandler, renderOwnerRecords };
