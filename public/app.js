@@ -263,7 +263,7 @@ function updateOwnerAfterCompletion(completed) {
 }
 function renderLogin() {
   if(config.mode==='pilot' && loginTab==='customer') loginTab='owner';
-  $('#app').innerHTML = `<main class="login"><section class="login-brand"><a class="brand" href="/">${icon('bolt')} ProLift<span>TRANSPORT OPERATIONS</span></a><div class="login-message"><div class="eyebrow">EVERY TRIP. CONNECTED.</div><h1>A clear road <br>from plan <br>to pickup<span>.</span></h1><p>Your fleet, your drivers, and your customers.<br>One place to keep everything moving.</p><div class="login-line">${icon('map')} Plan. Assign. Track. Deliver.</div></div><small>ProLift · Built around your operation</small></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to ProLift</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${config.needsPreviewAccess ? '<label>Workspace password<input id="workspace-password" type="password" autocomplete="current-password"></label>' : ''}${loginContent()}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
+  $('#app').innerHTML = `<main class="login"><section class="login-brand"><a class="brand" href="/">${icon('bolt')} ProLift<span>TRANSPORT OPERATIONS</span></a><div class="login-message"><div class="eyebrow">EVERY TRIP. CONNECTED.</div><h1>A clear road <br>from plan <br>to pickup<span>.</span></h1><p>Your fleet, your drivers, and your customers.<br>One place to keep everything moving.</p><div class="login-line">${icon('map')} Plan. Assign. Track. Deliver.</div></div><small>ProLift · Built around your operation</small></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to ProLift</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${config.needsPreviewAccess ? '<label>Workspace password<input id="workspace-password" type="password" autocomplete="current-password"></label><label><input id="remember-workspace-device" type="checkbox"> Remember this device for 14 days</label>' : ''}${loginContent()}${config.hostedWorkspace && !config.needsPreviewAccess ? '<button type="button" class="text-btn" id="forget-workspace-device">Forget this device</button>' : ''}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
   bindLogin();
 }
 function loginContent() {
@@ -283,7 +283,7 @@ async function grantHostedWorkspaceAccess() {
     input?.focus();
     throw Error('Enter the workspace password to continue.');
   }
-  await api('/api/preview/access',{username:'preview',password:input.value});
+  await api('/api/preview/access',{username:'preview',password:input.value,rememberDevice:!!$('#remember-workspace-device')?.checked});
   config.needsPreviewAccess=false;
   input.value='';
 }
@@ -292,6 +292,11 @@ async function enterDemoRole(role,driverId) {
   return enter((await api('/api/demo-login',{role,driverId})).user);
 }
 function bindLogin() {
+  if ($('#forget-workspace-device')) $('#forget-workspace-device').onclick=()=>run(async()=>{
+    await api('/api/preview/forget',{});
+    config.needsPreviewAccess=true;
+    renderLogin();
+  });
   document.querySelectorAll('[data-login-tab]').forEach(el => el.onclick = () => { loginTab = el.dataset.loginTab; codeSent = false; renderLogin(); });
   if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enterDemoRole('owner'));
   if ($('#driver-login')) $('#driver-login').onclick = () => run(async () => enterDemoRole('driver', $('#driver-choice').value));

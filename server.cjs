@@ -39,6 +39,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   }
   const inviteDigest = hostedDemoInvite && crypto.createHash('sha256').update(hostedDemoInvite).digest();
   const previewSessionAge = 43200;
+  const rememberedPreviewAge = 14 * 24 * 60 * 60;
   const previewPage = privateDemo ? fs.readFileSync(path.join(__dirname, 'public', 'preview.html'), 'utf8') : null;
   function previewSignature(expires) {
     return crypto.createHmac('sha256', previewDigest).update(inviteDigest || 'password').update(expires).digest();
@@ -398,7 +399,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           }
           if (!String(req.headers['content-type']).startsWith('application/json')) return json(res, 415, { error: 'JSON request required' });
           throttle(`preview-access:${req.socket.remoteAddress}`, 30, 60000);
-          const { token, username, password } = await body(req) || {};
+          const { token, username, password, rememberDevice } = await body(req) || {};
           const usingInvite = token !== undefined;
           const valid = usingInvite
             ? inviteDigest && typeof token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(token) &&
@@ -408,8 +409,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           if (!valid) {
             return json(res, 403, { error: usingInvite ? 'Invalid preview invite' : 'Check your username and password.' });
           }
-          const expires = String(clock() + previewSessionAge * 1000);
-          res.setHeader('Set-Cookie', `__Host-prolift_preview=${expires}.${previewSignature(expires).toString('hex')}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${previewSessionAge}`);
+          const sessionAge = ownerRecords && !usingInvite && rememberDevice === true ? rememberedPreviewAge : previewSessionAge;
+          const expires = String(clock() + sessionAge * 1000);
+          res.setHeader('Set-Cookie', `__Host-prolift_preview=${expires}.${previewSignature(expires).toString('hex')}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${sessionAge}`);
           return json(res, 200, { ok: true });
         } catch (error) {
           return json(res, error.status || 400, { error: error.message });
@@ -436,6 +438,15 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       "; connect-src 'self'" + googleCsp.connect + "; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" + googleCsp.extra);
     try {
       const url = new URL(req.url, 'http://localhost'), user = session(req);
+      if (ownerRecords && req.method === 'POST' && url.pathname === '/api/preview/forget') {
+        const origin = req.headers.origin;
+        if (req.headers['sec-fetch-site'] === 'cross-site' || (origin && new URL(origin).host !== req.headers.host)) {
+          return json(res,403,{error:'Cross-site requests are not allowed'});
+        }
+        if (!String(req.headers['content-type']).startsWith('application/json')) return json(res,415,{error:'JSON request required'});
+        res.setHeader('Set-Cookie','__Host-prolift_preview=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
+        return json(res,200,{ok:true});
+      }
       if (ownerRecords && req.method === 'GET' && url.pathname === '/owner/records') {
         requireRole(user,'owner');
         res.setHeader('Cache-Control','private, no-store');
@@ -464,7 +475,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
