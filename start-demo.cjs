@@ -46,6 +46,18 @@ async function start(createApp) {
     mongoClient = new MongoClient(process.env.ROYALCAB_MONGO_URI,{serverSelectionTimeoutMS:5000});
     const mongoDb = mongoClient.db('royalcab_dispatch_test');
     ownerRecords = (url,res)=>renderOwnerRecords(mongoDb,url,res);
+    ownerRecords.trips = async()=> {
+      const rows = await mongoDb.collection('lgtc_rides').find({}, {
+        projection:{_id:0,reference:1,service_date:1,source_row:1,'details.sourceFields':1}
+      }).sort({service_date:1,source_row:1}).toArray();
+      return rows.map(row=>{
+        const fields=row.details?.sourceFields || [];
+        const pickup=String(fields[14] ?? '').trim();
+        return {reference:row.reference,date:row.service_date,row:row.source_row,
+          pickup:/^(?:[01]?\d|2[0-3]):[0-5]\d$/.test(pickup) && !/^0?0:00$/.test(pickup) ? pickup : '',
+          from:String(fields[10] ?? '').trim(),to:String(fields[19] ?? '').trim()};
+      });
+    };
     mongoReplay = require('./mongo-test/hosted-replay.cjs').hostedReplay(mongoDb);
   }
   const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay});

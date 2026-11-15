@@ -131,7 +131,7 @@ function applySnapshot(r, explicit=false) {
     }
     // Preserve active form input and modal focus while updates continue in memory.
     if (explicit && user.role === 'driver' && $('dialog[open]')) return;
-    if (explicit || canRefreshWorkspace()) render();
+    if (explicit || !(tab==='trips' && config.mongoOwnerRecords) && canRefreshWorkspace()) render();
 }
 function canRefreshWorkspace() {
   return !(tab==='drivers' && fleetPageTab==='records') &&
@@ -275,7 +275,7 @@ function loginContent() {
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
-async function enter(u) {stopConnection(); if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function enter(u) {stopConnection(); mongoTrips=null; mongoTripQuery=''; mongoTripFilter='all'; mongoTripPage=1; if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 async function grantHostedWorkspaceAccess() {
   if (!config.needsPreviewAccess) return;
   const input = $('#workspace-password');
@@ -1184,8 +1184,71 @@ function bindTripPreferences() {
     for (const row of table?.rows || []) row.cells[index+1].hidden = true;
   }
 }
+let mongoTrips, mongoTripRequest, mongoTripQuery='', mongoTripFilter='all', mongoTripPage=1;
+function mongoTripsPage() {
+  return '<section class="simple-page-head"><div><h1>Trips</h1><p>Imported LGTC rides from MongoDB</p></div></section>'+
+    '<section class="bookings-panel" id="mongo-trips"><div class="bookings-filters"><label>Search rides'+
+    '<input type="search" id="mongo-trip-search" value="'+esc(mongoTripQuery)+'" placeholder="Ride ID or city"></label>'+
+    '<label>Review status<select id="mongo-trip-filter"><option value="all">All rides</option>'+
+    '<option value="review">Owner review</option><option value="ready">Assigned in replay plan</option>'+
+    '<option value="missing">Pickup time missing</option></select></label>'+
+    '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button></div>'+
+    '<p id="mongo-trips-status" role="status">Loading MongoDB rides…</p><div id="mongo-trips-results"></div></section>';
+}
+function bindMongoTrips() {
+  const panel=$('#mongo-trips');
+  if(!panel) return;
+  const search=$('#mongo-trip-search'), filter=$('#mongo-trip-filter'), results=$('#mongo-trips-results');
+  const status=$('#mongo-trips-status');
+  filter.value=mongoTripFilter;
+  const show=()=>{
+    if(!mongoTrips || !panel.isConnected) return;
+    const reasons=new Map(mongoTrips.review.map(ride=>[ride.reference,ride.reasons]));
+    const havePlan=mongoTrips.review.length>0;
+    filter.options[1].disabled=filter.options[2].disabled=!havePlan;
+    if(!havePlan && ['review','ready'].includes(filter.value)) filter.value=mongoTripFilter='all';
+    const query=mongoTripQuery.trim().toLowerCase();
+    const matches=mongoTrips.rides.filter(ride=>
+      [ride.reference,ride.from,ride.to].join(' ').toLowerCase().includes(query) &&
+      (mongoTripFilter==='all' || mongoTripFilter==='missing' && !ride.pickup ||
+        mongoTripFilter==='review' && reasons.has(ride.reference) ||
+        mongoTripFilter==='ready' && havePlan && !reasons.has(ride.reference)));
+    const perPage=25, pages=Math.max(1,Math.ceil(matches.length/perPage));
+    mongoTripPage=Math.min(mongoTripPage,pages);
+    const start=(mongoTripPage-1)*perPage;
+    status.textContent=matches.length ? (start+1)+'–'+Math.min(start+perPage,matches.length)+' of '+matches.length+
+      ' matching · '+mongoTrips.rides.length+' imported rides' : 'No matching rides · '+mongoTrips.rides.length+' imported rides';
+    const rows=matches.slice(start,start+perPage).map(ride=>{
+      const review=reasons.get(ride.reference);
+      const cells=[ride.reference,ride.date,ride.pickup||'Time missing',[ride.from,ride.to].filter(Boolean).join(' → '),
+        review ? review.join(', ') : havePlan ? 'Assigned in replay plan' : 'Imported'];
+      return '<tr>'+cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+'</tr>';
+    }).join('');
+    results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr><th>Ride ID</th><th>Service date</th><th>Pickup (ET)</th>'+
+      '<th>Route</th><th>Review status</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      '<nav class="pagination" aria-label="MongoDB rides pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
+      '>Previous</button><span>Page '+mongoTripPage+' of '+pages+'</span><button class="btn small" data-mongo-trip-step="1" '+
+      (mongoTripPage===pages?'disabled':'')+'>Next</button></nav>':'';
+  };
+  const load=async()=>{
+    try {
+      if(!mongoTripRequest) mongoTripRequest=api('/api/owner/mongo-trips').finally(()=>{mongoTripRequest=null;});
+      mongoTrips=await mongoTripRequest;
+      show();
+    } catch(error) { if(panel.isConnected) status.textContent=error.message; }
+  };
+  search.oninput=()=>{mongoTripQuery=search.value;mongoTripPage=1;show();};
+  filter.onchange=()=>{mongoTripFilter=filter.value;mongoTripPage=1;show();};
+  results.onclick=event=>{
+    const button=event.target.closest('[data-mongo-trip-step]');
+    if(button){mongoTripPage+=Number(button.dataset.mongoTripStep);show();}
+  };
+  $('#reload-mongo-trips').onclick=load;
+  if(mongoTrips) show();
+  void load();
+}
 function tripsPage(){
- if(config.mongoOwnerRecords) return mongoRecordsFrame('lgtc_rides','MongoDB trips');
+ if(config.mongoOwnerRecords) return mongoTripsPage();
  const view=selectTripWorkspace();boardPage=view.page;
  const options = (key,entries) => entries.map(([value,label]) =>
    '<option value="'+esc(value)+'"'+(tripFilters[key]===value?' selected':'')+'>'+esc(label)+'</option>').join('');
@@ -1763,6 +1826,7 @@ function render() {
   }
   if (tab !== 'overview') bindWorkspacePanels(workspaceView === tab);
   bindMissedPickupDemo();
+  bindMongoTrips();
   if ($('#mongo-owner-review')) $('#mongo-owner-review').onclick=()=>run(async()=>{
     const {review}=await api('/api/lgtc-replay');
     modal('<h2>Owner review · '+review.length+' rides</h2><div class="table-scroll"><table><thead><tr><th>Ride</th><th>Reason</th></tr></thead><tbody>'+

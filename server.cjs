@@ -845,6 +845,15 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         }
         return json(res,200,DispatchReview.inspect(s,trip,clock()));
       }
+      if (ownerRecords?.trips && req.method === 'GET' && url.pathname === '/api/owner/mongo-trips') {
+        requireRole(user,'owner');
+        res.setHeader('Cache-Control','private, no-store');
+        try {
+          return json(res,200,{rides:await ownerRecords.trips(),review:mongoReplay?.review() || []});
+        } catch {
+          return json(res,503,{error:'MongoDB trips are temporarily unavailable.'});
+        }
+      }
       if (mongoReplay && url.pathname === '/api/lgtc-replay' && ['GET','POST'].includes(req.method)) {
         requireRole(user,'owner');
         if (req.method === 'GET') return json(res,200,{review:mongoReplay.review()});
