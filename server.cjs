@@ -372,7 +372,11 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     '/api/import/preview', '/api/import/confirm', '/api/lgtc/schedules', '/api/lgtc/dispatch',
     '/api/lgtc/customer', '/api/driver/tracking', '/api/driver/location',
   ]);
+  const previewLoginAssets = new Set(['/', '/api/config', '/api/session', '/app.js', '/board.js',
+    '/styles.css', '/interface.css', '/favicon.svg', '/leaflet.js', '/leaflet.css', '/map-camera.js',
+    '/rider-view.js', '/ride-explanation.js', '/lgtc-view.js', '/google-fleet-map.js']);
   const server = http.createServer(async (req, res) => {
+    let needsPreviewAccess=false;
     if (hostedDemo && req.method==='GET' && req.url==='/healthz') return json(res,200,{ok:true});
     if (privateDemo) {
       if (req.method === 'GET' && req.url.split('?')[0] === '/preview') {
@@ -414,11 +418,13 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       const encoded=/^Basic ([A-Za-z0-9+/=]+)$/i.exec(req.headers.authorization||'')?.[1];
       const digest=encoded&&crypto.createHash('sha256').update(Buffer.from(encoded,'base64')).digest();
       if(!hasPreviewSession(req)&&(!digest||!crypto.timingSafeEqual(digest,previewDigest))){
-        if (req.method === 'GET' && req.url.split('?')[0] === '/') {
+        const pathname = req.url.split('?')[0];
+        if (ownerRecords && req.method === 'GET' && previewLoginAssets.has(pathname)) needsPreviewAccess=true;
+        else if (req.method === 'GET' && pathname === '/') {
           res.writeHead(302, { Location: '/preview', 'Cache-Control': 'no-store' });
           return res.end();
         }
-        return json(res,401,{error:'RoyalCab preview sign-in required'});
+        else return json(res,401,{error:'RoyalCab preview sign-in required'});
       }
     }
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -458,15 +464,15 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,mongoOwnerRecords:!!ownerRecords&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
-            zoom:13,googleKey:!pilot||user?mapKey||undefined:undefined},
+            zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
           drivers:pilot?[]:load().drivers.map(d=>({id:d.id,name:d.name,vehicle:d.vehicle})),
           providers:{maps:mapKey?'Google Maps':'OpenStreetMap',routing:roadRouting?'Google Routes road ETA pilot':'Simulated travel time',
             gps:'Foreground phone GPS',sms:pilot?'Delivery not configured':'Demo verification',storage:'SQLite (local)'}});
       }
-      if (url.pathname === '/api/session' && req.method === 'GET') return json(res, 200, { user });
+      if (url.pathname === '/api/session' && req.method === 'GET') return json(res, 200, { user:needsPreviewAccess ? null : user });
       if (pilot && (url.pathname==='/api/demo-login'||url.pathname.startsWith('/api/demo/')||url.pathname.startsWith('/api/auth/'))) {
         return json(res,403,{error:'Demo login and test data tools are unavailable in the road pilot.'});
       }

@@ -263,7 +263,7 @@ function updateOwnerAfterCompletion(completed) {
 }
 function renderLogin() {
   if(config.mode==='pilot' && loginTab==='customer') loginTab='owner';
-  $('#app').innerHTML = `<main class="login"><section class="login-brand"><a class="brand" href="/">${icon('bolt')} ProLift<span>TRANSPORT OPERATIONS</span></a><div class="login-message"><div class="eyebrow">EVERY TRIP. CONNECTED.</div><h1>A clear road <br>from plan <br>to pickup<span>.</span></h1><p>Your fleet, your drivers, and your customers.<br>One place to keep everything moving.</p><div class="login-line">${icon('map')} Plan. Assign. Track. Deliver.</div></div><small>ProLift · Built around your operation</small></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to ProLift</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${loginContent()}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
+  $('#app').innerHTML = `<main class="login"><section class="login-brand"><a class="brand" href="/">${icon('bolt')} ProLift<span>TRANSPORT OPERATIONS</span></a><div class="login-message"><div class="eyebrow">EVERY TRIP. CONNECTED.</div><h1>A clear road <br>from plan <br>to pickup<span>.</span></h1><p>Your fleet, your drivers, and your customers.<br>One place to keep everything moving.</p><div class="login-line">${icon('map')} Plan. Assign. Track. Deliver.</div></div><small>ProLift · Built around your operation</small></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to ProLift</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${config.needsPreviewAccess ? '<label>Workspace password<input id="workspace-password" type="password" autocomplete="current-password"></label>' : ''}${loginContent()}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
   bindLogin();
 }
 function loginContent() {
@@ -276,12 +276,28 @@ function loginContent() {
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
 async function enter(u) {stopConnection(); if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function grantHostedWorkspaceAccess() {
+  if (!config.needsPreviewAccess) return;
+  const input = $('#workspace-password');
+  if (!input?.value) {
+    input?.focus();
+    throw Error('Enter the workspace password to continue.');
+  }
+  await api('/api/preview/access',{username:'preview',password:input.value});
+  config.needsPreviewAccess=false;
+  input.value='';
+}
+async function enterDemoRole(role,driverId) {
+  await grantHostedWorkspaceAccess();
+  return enter((await api('/api/demo-login',{role,driverId})).user);
+}
 function bindLogin() {
   document.querySelectorAll('[data-login-tab]').forEach(el => el.onclick = () => { loginTab = el.dataset.loginTab; codeSent = false; renderLogin(); });
-  if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'owner' })).user));
-  if ($('#driver-login')) $('#driver-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'driver', driverId: $('#driver-choice').value })).user));
-  if ($('#demo-customer-login')) $('#demo-customer-login').onclick = () => run(async () => enter((await api('/api/demo-login', { role: 'customer' })).user));
+  if ($('#owner-login')) $('#owner-login').onclick = () => run(async () => enterDemoRole('owner'));
+  if ($('#driver-login')) $('#driver-login').onclick = () => run(async () => enterDemoRole('driver', $('#driver-choice').value));
+  if ($('#demo-customer-login')) $('#demo-customer-login').onclick = () => run(async () => enterDemoRole('customer'));
   if ($('#customer-login')) $('#customer-login').onsubmit = e => { e.preventDefault(); run(async () => {
+    await grantHostedWorkspaceAccess();
     loginPhone = $('#customer-phone').value.trim(); loginName = $('#customer-name').value.trim();
     if (codeSent) return enter((await api('/api/auth/verify', { phone: loginPhone, name: loginName, code: $('#sms-code').value })).user);
     const result = await api('/api/auth/request-code', { phone: loginPhone }); codeSent = true; renderLogin(); $('#sms-hint').textContent = `DEMO code: ${result.demoCode} · No SMS was sent.`; $('#sms-code').focus();
