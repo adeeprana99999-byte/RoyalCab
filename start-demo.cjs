@@ -52,9 +52,13 @@ async function start(createApp) {
       }).sort({service_date:1,source_row:1}).toArray();
       return rows.map(row=>{
         const fields=row.details?.sourceFields || [];
-        const pickup=String(fields[14] ?? '').trim();
-        return {reference:row.reference,date:row.service_date,row:row.source_row,
-          pickup:/^(?:[01]?\d|2[0-3]):[0-5]\d$/.test(pickup) && !/^0?0:00$/.test(pickup) ? pickup : '',
+        const sourceTime=String(fields[14] ?? '').trim();
+        const clockTime=/^([01]?\d|2[0-3]):([0-5]\d)(?::00)?$/.exec(sourceTime);
+        const minute=clockTime ? Number(clockTime[1])*60+Number(clockTime[2])
+          : /^(?:0(?:\.\d+)?|\.\d+)$/.test(sourceTime) ? Math.round(Number(sourceTime)*1440) : 0;
+        const pickup=minute>0 && minute<1440
+          ? String(Math.floor(minute/60)).padStart(2,'0')+':'+String(minute%60).padStart(2,'0') : '';
+        return {reference:row.reference,date:row.service_date,row:row.source_row,pickup,
           from:String(fields[10] ?? '').trim(),to:String(fields[19] ?? '').trim()};
       });
     };
