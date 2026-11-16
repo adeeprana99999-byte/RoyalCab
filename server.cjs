@@ -38,11 +38,11 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     if (!privateDemo || !Array.isArray(hostedAccounts)) throw Error('EASYRIDE accounts require private hosted mode.');
     for (const account of hostedAccounts) {
       const {role,phone,password,driverId,name}=account;
-      if (!['owner','driver','customer'].includes(role) || !/^\+[1-9]\d{7,14}$/.test(phone) ||
-          typeof password !== 'string' || password.length < 12 || password.length > 128 ||
-          accounts.has(phone) || (role==='driver' && !['d1','d2','d3'].includes(driverId))) {
-        throw Error('Invalid EASYRIDE hosted account configuration.');
-      }
+      if (!['owner','driver','customer'].includes(role)) throw Error('EASYRIDE account role must be owner, driver, or customer.');
+      if (typeof phone!=='string' || !/^\+[1-9]\d{7,14}$/.test(phone)) throw Error('EASYRIDE '+role+' phone must start with + and contain only digits after it.');
+      if (typeof password!=='string' || password.length<12 || password.length>128) throw Error('EASYRIDE '+role+' password must be 12–128 characters.');
+      if (accounts.has(phone)) throw Error('EASYRIDE '+role+' phone duplicates another account. Use a unique phone number.');
+      if (role==='driver' && !['d1','d2','d3'].includes(driverId)) throw Error('EASYRIDE driverId must be d1, d2, or d3.');
       const salt=crypto.randomBytes(16);
       accounts.set(phone,{role,phone,driverId,name,salt,digest:crypto.scryptSync(password,salt,32)});
     }
