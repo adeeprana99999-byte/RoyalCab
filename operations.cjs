@@ -1,5 +1,5 @@
 const crypto=require('node:crypto');
-const defaults={dispatchLeadMinutes:15,urgentGroupEnabled:true,urgentGroupMinutes:5,urgentGroupSize:3,customerReminderMinutes:10,customerRemindersEnabled:true,timezone:'America/New_York',companyName:'ProLift'};
+const defaults={dispatchLeadMinutes:15,urgentGroupEnabled:true,urgentGroupMinutes:5,urgentGroupSize:3,customerReminderMinutes:10,customerRemindersEnabled:true,timezone:'America/New_York',companyName:'EASYRIDE'};
 function normalize(s){s.customerPreferences ||= {};s.settings={...defaults,...s.settings};s.customerMessages ||= [];s.assignmentHistory ||= [];s.reservations ||= [];s.supportRequests ||= [];return s;}
 function settings(s){return {...defaults,...s.settings};}
 function validateSettings(body){
@@ -23,13 +23,13 @@ function confirmed(s,t,driver,offer,now){
   t.confirmedDriver={driverId:driver.id,name:driver.name,phone:driver.contactPhone||driver.phone,...v};t.assignmentId=offer.id;t.confirmedAt=now;
   s.assignmentHistory.push({id:offer.id,tripId:t.id,reference:t.reference,pickupAt:t.pickupAt,driverId:driver.id,driverName:driver.name,...v,assignedAt:now,startedAt:null,endedAt:null,outcome:'active'});
   const p=settings(s),car=[v.color,v.vehicle].filter(Boolean).join(' ');
-  message(s,t,'confirmed',`${p.companyName}: Your ride ${t.reference} is confirmed. Pickup: ${t.pickup}, ${formatTime(s,t.pickupAt)}. Driver: ${driver.name}. Driver phone: ${driver.contactPhone||driver.phone||'Contact dispatch'}. Car: ${car}. Plate: ${v.plate}. Destination: ${t.destination}. Open ProLift to track your ride.`,offer.id,now);
+  message(s,t,'confirmed',`${p.companyName}: Your ride ${t.reference} is confirmed. Pickup: ${t.pickup}, ${formatTime(s,t.pickupAt)}. Driver: ${driver.name}. Driver phone: ${driver.contactPhone||driver.phone||'Contact dispatch'}. Car: ${car}. Plate: ${v.plate}. Destination: ${t.destination}. Open EASYRIDE to track your ride.`,offer.id,now);
   if(now>=t.pickupAt-p.customerReminderMinutes*60000)t.reminderCoveredByAssignment=offer.id;
 }
 function started(s,t,now){normalize(s);t.startedAt=now;const row=s.assignmentHistory.find(a=>a.id===t.assignmentId);if(row)row.startedAt=now;}
 function stage(s,t,phase,now){
   if(!t.assignmentId||!t.confirmedDriver)return;const p=settings(s),d=t.confirmedDriver;
-  const text={depart:`Your driver ${d.name} is heading to ${t.pickup}. Car: ${d.vehicle}, plate ${d.plate}. Driver phone: ${d.phone||'contact dispatch'}.`,arrive:`Your driver ${d.name} has arrived at ${t.pickup}. Match car ${d.vehicle} and plate ${d.plate} before boarding.`,pickup:`Your ride is underway to ${t.destination}. Open ProLift for trip updates.`,complete:'Your ride is complete. Your trip summary, rating and help options are available in Ride history.'}[phase];
+  const text={depart:`Your driver ${d.name} is heading to ${t.pickup}. Car: ${d.vehicle}, plate ${d.plate}. Driver phone: ${d.phone||'contact dispatch'}.`,arrive:`Your driver ${d.name} has arrived at ${t.pickup}. Match car ${d.vehicle} and plate ${d.plate} before boarding.`,pickup:`Your ride is underway to ${t.destination}. Open EASYRIDE for trip updates.`,complete:'Your ride is complete. Your trip summary, rating and help options are available in Ride history.'}[phase];
   if(text)message(s,t,'stage_'+phase,`${p.companyName}: ${t.reference}. ${text}`,t.assignmentId,now);
 }
 function outcome(s,t,result,now){
@@ -45,7 +45,7 @@ function reminders(s,now){
   for(const t of s.trips){
     if(!t.assignmentId||!t.confirmedDriver||!['accepted','heading_to_pickup','arrived'].includes(t.status)||now<t.pickupAt-p.customerReminderMinutes*60000||now>t.pickupAt||t.reminderCoveredByAssignment===t.assignmentId)continue;
     const before=s.customerMessages.length,d=t.confirmedDriver;
-    message(s,t,'pickup_reminder',`${p.companyName}: Pickup reminder for ${t.reference}: ${formatTime(s,t.pickupAt)} at ${t.pickup}. Driver: ${d.name}, ${d.phone||'contact dispatch'}. Car: ${[d.color,d.vehicle].filter(Boolean).join(' ')}. Plate: ${d.plate}. Open ProLift for current trip updates.`,t.assignmentId,now);
+    message(s,t,'pickup_reminder',`${p.companyName}: Pickup reminder for ${t.reference}: ${formatTime(s,t.pickupAt)} at ${t.pickup}. Driver: ${d.name}, ${d.phone||'contact dispatch'}. Car: ${[d.color,d.vehicle].filter(Boolean).join(' ')}. Plate: ${d.plate}. Open EASYRIDE for current trip updates.`,t.assignmentId,now);
     t.reminderCoveredByAssignment=t.assignmentId;changed ||= before!==s.customerMessages.length;
   }
   return changed;

@@ -371,7 +371,7 @@ function lgtcSettingsPage() {
     roster.map(d=>'<option value="' + esc(d.id) + '">' + esc(d.name) + '</option>').join('') + '</select></label></div>' +
     '<div class="lgtc-edit-actions"><button class="btn" name="action" value="lookup">Find saved preference</button>' +
     '<button class="btn primary" name="action" value="save">Save regular driver</button></div><p id="lgtc-customer-message" role="status"></p></form></section>' +
-    '<section class="panel lgtc-panel"><h2>Automatic day plans</h2><p class="help">After you save an upload, ProLift drafts each service date using this roster. Confirm driver availability for the day. Trips with missing times, unverified requirements, or source notes stay in review.</p>' +
+    '<section class="panel lgtc-panel"><h2>Automatic day plans</h2><p class="help">After you save an upload, EASYRIDE drafts each service date using this roster. Confirm driver availability for the day. Trips with missing times, unverified requirements, or source notes stay in review.</p>' +
     '<form id="lgtc-automation-form"><label class="lgtc-check"><input type="checkbox" name="enabled" ' + (settings.enabled ? 'checked' : '') +
     '> Build a draft automatically after upload</label><fieldset><legend>Default available drivers</legend><div class="lgtc-roster">' +
     roster.map(d=>'<label class="lgtc-check"><input type="checkbox" name="driverIds" value="' + esc(d.id) + '" ' +

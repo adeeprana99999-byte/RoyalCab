@@ -1823,3 +1823,138 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
   #mongo-trips .table-scroll table tbody tr td { padding:3px 4px; border:0; }
   #mongo-trips .table-scroll table tbody tr { overflow:hidden; }
 }
+
+#mongo-trips .table-scroll table { min-width:1180px; }
+#mongo-trips :is(th,td):nth-child(5) { white-space:nowrap; font-variant-numeric:tabular-nums; }
+#mongo-trips .mongo-trip-review { display:block; margin-top:4px; }
+@media (max-width:700px) {
+  #mongo-trips .table-scroll table { min-width:0; }
+  #mongo-trips td[data-label] { grid-column:auto; }
+  #mongo-trips td:is(:first-child,:nth-child(3),:nth-child(6),:nth-child(7),:nth-child(8)) { grid-column:1/-1; }
+  #mongo-trips td[data-label]::before {
+    content:attr(data-label);
+    display:block;
+    color:#485e79;
+    font-size:11px;
+    font-weight:600;
+  }
+}
+
+#mongo-trips .mongo-trip-route { display:grid; gap:5px; min-width:13rem; font-weight:400; }
+#mongo-trips .mongo-trip-route strong { display:block; font-size:11px; color:#485e79; }
+
+.easyride-logo { width:32px; height:32px; flex:none; vertical-align:middle; }
+.owner-sidebar-brand .easyride-logo { margin-inline-end:6px; }
+
+.easyride-logo {
+  display:block;
+  width:min(100%,156px);
+  height:auto;
+  border-radius:9px;
+}
+.login-brand .easyride-logo { width:min(100%,320px); border-radius:14px; }
+.owner-sidebar-brand .easyride-logo { margin:0; }
+
+.login-brand.easyride-signin-brand {
+  display:flex;
+  position:relative;
+  isolation:isolate;
+  flex-direction:column;
+  justify-content:center;
+  align-items:flex-start;
+  gap:32px;
+  padding:clamp(28px,5vw,80px);
+  background:
+    radial-gradient(ellipse at 12% 15%,#18579280,transparent 58%),
+    radial-gradient(ellipse at 95% 85%,#09796e52,transparent 56%),
+    #091526;
+}
+.easyride-signin-brand::before {
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:radial-gradient(circle,#75b7ef33 1px,transparent 1.5px) 0 0 / 23px 23px;
+}
+.easyride-signin-logo { display:block; width:min(100%,420px); }
+.easyride-signin-brand .easyride-signin-logo .easyride-logo {
+  width:100%;
+  border:1px solid #ffffff55;
+  border-radius:20px;
+  box-shadow:0 18px 60px #020a1a99;
+}
+.easyride-signin-title h1 {
+  margin:0;
+  color:#fff;
+  font-family:Inter,"Segoe UI",sans-serif;
+  font-size:clamp(22px,3vw,38px);
+  letter-spacing:-.04em;
+}
+.easyride-signin-title ul {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding:0;
+  margin:14px 0 0;
+  list-style:none;
+}
+.easyride-signin-title li {
+  display:flex;
+  align-items:center;
+  gap:7px;
+  padding:7px 10px;
+  border:1px solid #81bdf047;
+  border-radius:8px;
+  background:#122c487f;
+  color:#d7ebff;
+  font-size:12px;
+}
+.easyride-signin-title li .icon { width:15px; height:15px; color:#65e8d8; }
+@media(max-width:760px) {
+  .login-brand.easyride-signin-brand { min-height:0; gap:14px; padding:20px 23px; }
+  .easyride-signin-logo { width:min(100%,185px); }
+  .easyride-signin-title ul { margin-top:8px; }
+}
+
+/* Sign-in form */
+.login:has(.easyride-signin-brand) .login-panel {
+  justify-content:center;
+  background:#f4f7fc;
+  padding:clamp(24px,5vw,80px);
+}
+.login:has(.easyride-signin-brand) .login-panel > h2 { color:#10213b; letter-spacing:-.04em; }
+.login:has(.easyride-signin-brand) .login-panel > .muted { color:#475b75; }
+.login:has(.easyride-signin-brand) .role-tabs {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:4px;
+  background:#e4ecf8;
+  border:1px solid #d3dff0;
+  border-radius:12px;
+}
+.login:has(.easyride-signin-brand) .role-tabs button { color:#344b69; }
+.login:has(.easyride-signin-brand) .role-tabs button.selected {
+  background:#183c72;
+  color:white;
+  box-shadow:0 2px 6px #142e5426;
+}
+.login:has(.easyride-signin-brand) #login-content {
+  background:#fff;
+  border:1px solid #d7e1ee;
+  border-radius:16px;
+  padding:clamp(16px,3vw,26px);
+  box-shadow:0 12px 36px #12365a0d;
+}
+.login:has(.easyride-signin-brand) #login-content .workspace-card {
+  background:#edf4ff;
+  border-color:#dae6f7;
+  color:#203d64;
+}
+.login:has(.easyride-signin-brand) #login-content .btn.primary {
+  background:linear-gradient(120deg,#1551b6,#214077);
+  border-color:#214077;
+  color:#fff;
+}
+.login:has(.easyride-signin-brand) #login-content .btn.primary:hover { filter:brightness(1.12); }
+.login:has(.easyride-signin-brand) .login-note { color:#506580; }

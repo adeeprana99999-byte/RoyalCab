@@ -49,7 +49,8 @@ async function start(createApp) {
     Object.assign(ownerRecords, require('./mongo-test/trip-records.cjs').tripRecords(mongoDb));
     mongoReplay = require('./mongo-test/hosted-replay.cjs').hostedReplay(mongoDb);
   }
-  const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay});
+  const hostedAccounts=process.env.EASYRIDE_HOSTED_ACCOUNTS ? JSON.parse(process.env.EASYRIDE_HOSTED_ACCOUNTS) : undefined;
+  const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay,hostedAccounts});
   if (mongoClient) app.server.once('close',()=>void mongoClient.close());
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
@@ -69,7 +70,7 @@ async function start(createApp) {
   }
   try {
     if (sheetFile) {
-      console.log('RoyalCab / ProLift sheet-only test ' + url);
+      console.log('EASYRIDE sheet-only test ' + url);
     } else {
     await post('/api/demo-login',{role:'owner'});
     await post('/api/demo/volume',{});
@@ -82,7 +83,7 @@ async function start(createApp) {
     if (!publicDemo) await post('/api/lgtc/customer',{action:'save',...rider,driverId:'d1'});
     await post('/api/lgtc/settings',{enabled:true,driverIds:['d1','d2'],buffer:10,profiles:{A:{mode:'standard',base:1,extras:[]}}});
     const folder=writeExampleFiles();
-    console.log(hosted?'RoyalCab / ProLift hosted demo listening on port '+app.server.address().port:'RoyalCab / ProLift demo '+url);
+    console.log(hosted?'EASYRIDE hosted demo listening on port '+app.server.address().port:'EASYRIDE demo '+url);
     console.log('Demo datasets loaded. Next-day LGTC and Excel files: '+folder);
     }
   } catch(error) {

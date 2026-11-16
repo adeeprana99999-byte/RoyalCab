@@ -1,3 +1,4 @@
+const easyrideLogo = '<img class="easyride-logo" src="/easyride-brand.png" alt="EASYRIDE" width="1536" height="1024">';
 function requestId() {
   if (crypto.randomUUID) return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -131,7 +132,7 @@ function applySnapshot(r, explicit=false) {
     }
     // Preserve active form input and modal focus while updates continue in memory.
     if (explicit && user.role === 'driver' && $('dialog[open]')) return;
-    if (!explicit && tab==='trips' && config.mongoOwnerRecords) {
+    if (!explicit && tab==='trips' && mongoTripsEnabled()) {
       const visibleRides = new Map((mongoTrips?.rides||[]).map(ride=>[ride.id,ride]));
       document.querySelectorAll('[data-mongo-trip-id]').forEach(row=>{
         const ride=visibleRides.get(row.dataset.mongoTripId);
@@ -275,10 +276,16 @@ function updateOwnerAfterCompletion(completed) {
 }
 function renderLogin() {
   if(config.mode==='pilot' && loginTab==='customer') loginTab='owner';
-  $('#app').innerHTML = `<main class="login"><section class="login-brand"><a class="brand" href="/">${icon('bolt')} ProLift<span>TRANSPORT OPERATIONS</span></a><div class="login-message"><div class="eyebrow">EVERY TRIP. CONNECTED.</div><h1>A clear road <br>from plan <br>to pickup<span>.</span></h1><p>Your fleet, your drivers, and your customers.<br>One place to keep everything moving.</p><div class="login-line">${icon('map')} Plan. Assign. Track. Deliver.</div></div><small>ProLift · Built around your operation</small></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to ProLift</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${config.needsPreviewAccess ? '<label>Workspace password<input id="workspace-password" type="password" autocomplete="current-password"></label><label><input id="remember-workspace-device" type="checkbox"> Remember this device for 14 days</label>' : ''}${loginContent()}${config.hostedWorkspace && !config.needsPreviewAccess ? '<button type="button" class="text-btn" id="forget-workspace-device">Forget this device</button>' : ''}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
+  $('#app').innerHTML = `<main class="login"><section class="login-brand easyride-signin-brand"><a class="easyride-signin-logo" href="/">${easyrideLogo}</a><div class="easyride-signin-title"><h1>Transportation operations</h1><ul aria-label="Workspaces"><li>${icon('map')} Dispatch</li><li>${icon('car')} Driver</li><li>${icon('users')} Customer</li></ul></div></section><section class="login-panel"><div class="demo-label">${config.mode==='pilot'?'CONTROLLED ROAD PILOT':'LOCAL DEMO · SIMULATED SERVICES'}</div><h2>Welcome to EASYRIDE</h2><p class="muted">Choose your workspace to get started.</p><div class="role-tabs">${(config.mode==='pilot'?['owner','driver']:['owner','driver','customer']).map(r => `<button data-login-tab="${r}" class="${r === loginTab ? 'selected' : ''}">${esc(r[0].toUpperCase() + r.slice(1))}</button>`).join('')}</div><div id="login-content">${config.needsPreviewAccess ? '<label>Workspace password<input id="workspace-password" type="password" autocomplete="current-password"></label><label><input id="remember-workspace-device" type="checkbox"> Remember this device for 14 days</label>' : ''}${loginContent()}${config.hostedWorkspace && !config.needsPreviewAccess ? '<button type="button" class="text-btn" id="forget-workspace-device">Forget this device</button>' : ''}</div><div class="login-note">${icon('check')} One workspace for every part of your journey.<br>${config.mode==='pilot'?'Use the access code issued for your account.':'SMS, positions, and travel estimates are simulated in this build.'}</div></section></main>`;
   bindLogin();
 }
 function loginContent() {
+  if (config.localPhoneLogin || config.hostedPhoneLogin) {
+    const samples={owner:'+15550103001',driver:'+15550101001',customer:'+15550102001'};
+    return '<form id="demo-phone-login"><label>Mobile number<input name="phone" type="tel" autocomplete="username" required></label>'+
+      '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>'+
+      '<button class="btn primary full">Sign in</button>'+(config.localPhoneLogin?'<p class="help">Demo mobile: '+samples[loginTab]+' · Password: Ride1234</p>':'')+'</form>';
+  }
   if (config.mode === 'pilot') return '<form id="pilot-login">' +
     (loginTab === 'driver' ? '<label>Driver ID<input name="driverId" maxlength="80" required autocomplete="username"></label>' : '') +
     '<label>Access code<input type="password" name="code" minlength="20" maxlength="150" required autocomplete="current-password"></label>' +
@@ -287,7 +294,7 @@ function loginContent() {
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
-async function enter(u) {stopConnection(); expandedMongoTrips.clear(); mongoTrips=null; mongoTripQuery=''; mongoTripFilter='all'; mongoTripPage=1; if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function enter(u) {stopConnection(); driverPayDate=''; expandedMongoTrips.clear(); mongoTrips=null; mongoTripQuery=''; mongoTripFilter='all'; mongoTripPage=1; if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 async function grantHostedWorkspaceAccess() {
   if (!config.needsPreviewAccess) return;
   const input = $('#workspace-password');
@@ -303,7 +310,14 @@ async function enterDemoRole(role,driverId) {
   await grantHostedWorkspaceAccess();
   return enter((await api('/api/demo-login',{role,driverId})).user);
 }
+const signOut = () => run(async () => { if(user.role==='driver'&&gpsWatch!==null)await stopPhoneTracking();await api('/api/logout', {}); stopConnection(); user = null; codeSent = false; renderLogin(); });
 function bindLogin() {
+  const phoneLogin=$('#demo-phone-login');
+  if(phoneLogin) phoneLogin.onsubmit=event=>{
+    event.preventDefault();
+    const credentials=Object.fromEntries(new FormData(phoneLogin));
+    run(async()=>enter((await api(config.hostedPhoneLogin?'/api/hosted-login':'/api/auth/demo-password',{role:loginTab,...credentials})).user));
+  };
   if ($('#forget-workspace-device')) $('#forget-workspace-device').onclick=()=>run(async()=>{
     await api('/api/preview/forget',{});
     config.needsPreviewAccess=true;
@@ -341,9 +355,9 @@ function shell(content) {
   const owner = user.role === 'owner';if(owner){ownerShell(content,retainedMap);return;}
   const nav = user.role === 'driver' ? [['work', 'car', 'My work'], ['vehicle','car','Vehicle'], ['driver-messages','bell','Messages'], ['scheduled','clock','Scheduled rides'], ['history', 'clock', 'Trip history']] : [['mytrips', 'car', 'My trips'], ['help','bell','Help requests'], ['messages','bell','Ride updates'], ['history', 'clock', 'Trip history']];
   const titles = {readiness: 'Pickup readiness',scheduled:'Scheduled rides',help:'Help requests', overview: 'Live fleet', trips: 'All trips', schedule: 'Upcoming rides', fleet: 'Live fleet', imports: 'Import planned trips', drivers: 'Your drivers', activity: 'Activity log', work: 'Your driving day', vehicle:'Vehicle', 'driver-messages':'Messages', mytrips: 'Your trips', history: 'Trip history', reports:'Reports', messages:'Customer messages', settings:'Settings' };
-  $('#app').innerHTML = `<a class="skip-link" href="#main-content">Skip to main content</a><div class="app-layout rider-driver-portal role-${esc(user.role)}"><aside class="sidebar"><a class="brand" href="/">${icon('bolt')} RoyalCab</a><div class="workspace-label">${owner ? 'OWNER WORKSPACE' : user.role === 'driver' ? 'DRIVER WORKSPACE' : 'CUSTOMER WORKSPACE'}</div><nav>${nav.map(([id, i, label]) => `<button data-nav="${id}" class="nav-item ${tab === id ? 'active' : ''}" ${tab===id?'aria-current="page"':''}>${icon(i)}${label}${driverReplyBadge(id)}${id === 'trips' && state.trips.some(t => t.redFlag) ? '<span class="nav-alert">!</span>' : ''}</button>`).join('')}</nav>${quickNavigation(nav)}<label class="mobile-navigation">Workspace<select id="workspace-navigation" aria-label="Open workspace section">${nav.map(([id,,label])=>`<option value="${id}" ${tab===id?'selected':''}>${label}</option>`).join('')}</select></label><div class="sidebar-bottom"><div class="simulation">${icon('bolt')}<div><strong>Demo environment</strong><span>Dummy GPS, SMS & routing</span></div></div><div class="profile"><span class="avatar">${esc(user.name[0])}</span><div><strong>${esc(user.name)}</strong><span>${owner ? 'Fleet owner' : user.role === 'driver' ? 'Driver' : 'Customer'}</span></div><button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">${icon('logout')}</button></div></div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><span>Workspace <span class="slash">/</span> <strong>${titles[tab]}</strong></span><div><span id="connection" class="connection">${connected ? 'Live connection' : 'Connecting…'}</span><span class="today">${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span></div></header><div class="page-content ${user.role === 'owner' && tab === 'overview' ? 'fleet-home' : ''}">${content}</div><footer>RoyalCab <span>Local demo · Simulated dispatch</span></footer></main></div><dialog id="modal"></dialog>`;
+  $('#app').innerHTML = `<a class="skip-link" href="#main-content">Skip to main content</a><div class="app-layout rider-driver-portal role-${esc(user.role)}"><aside class="sidebar"><a class="brand" href="/">${easyrideLogo}</a><div class="workspace-label">${owner ? 'OWNER WORKSPACE' : user.role === 'driver' ? 'DRIVER WORKSPACE' : 'CUSTOMER WORKSPACE'}</div><nav>${nav.map(([id, i, label]) => `<button data-nav="${id}" class="nav-item ${tab === id ? 'active' : ''}" ${tab===id?'aria-current="page"':''}>${icon(i)}${label}${driverReplyBadge(id)}${id === 'trips' && state.trips.some(t => t.redFlag) ? '<span class="nav-alert">!</span>' : ''}</button>`).join('')}</nav>${quickNavigation(nav)}<label class="mobile-navigation">Workspace<select id="workspace-navigation" aria-label="Open workspace section">${nav.map(([id,,label])=>`<option value="${id}" ${tab===id?'selected':''}>${label}</option>`).join('')}</select></label><div class="sidebar-bottom"><div class="simulation">${icon('bolt')}<div><strong>Demo environment</strong><span>Dummy GPS, SMS & routing</span></div></div><div class="profile"><span class="avatar">${esc(user.name[0])}</span><div><strong>${esc(user.name)}</strong><span>${owner ? 'Fleet owner' : user.role === 'driver' ? 'Driver' : 'Customer'}</span></div><button id="logout" class="icon-btn" title="Sign out" aria-label="Sign out">${icon('logout')}</button></div></div></aside><main class="main" id="main-content" tabindex="-1"><header class="topbar"><span>Workspace <span class="slash">/</span> <strong>${titles[tab]}</strong></span><div><span id="connection" class="connection">${connected ? 'Live connection' : 'Connecting…'}</span><span class="today">${new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span></div></header><div class="page-content ${user.role === 'owner' && tab === 'overview' ? 'fleet-home' : ''}">${content}</div><footer>EASYRIDE <span>Local demo · Simulated dispatch</span></footer></main></div><dialog id="modal"></dialog>`;
   document.querySelectorAll('[data-nav]').forEach(el => el.onclick = () => { tab = el.dataset.nav; search = ''; filter = 'all'; render(); });
-  $('#logout').onclick = () => run(async () => { if(user.role==='driver'&&gpsWatch!==null)await stopPhoneTracking();await api('/api/logout', {}); stopConnection(); user = null; codeSent = false; renderLogin(); });
+  $('#logout').onclick = signOut;
   const newMap=document.querySelector('#geo-fleet-map');if(retainedMap&&newMap&&geoMap){newMap.replaceWith(retainedMap);}else if(geoMap){geoMap.remove();geoMap=null;geoMarkers=null;}
   bindActions();
 }
@@ -1199,7 +1213,7 @@ function bindTripPreferences() {
 let mongoTrips, mongoTripRequest, mongoTripQuery='', mongoTripFilter='all', mongoTripPage=1;
 let mongoTripPageSize=500;
 const expandedMongoTrips=new Set();
-function mongoTripsEnabled() { return !!config.mongoOwnerRecords; }
+function mongoTripsEnabled() { return !!config.mongoOwnerRecords || mongoOwnerFleet && user?.role==='owner'; }
 function mongoTripsPage() {
   return '<section class="bookings-panel" id="mongo-trips">'+
     '<input class="mongo-trip-search" type="search" id="mongo-trip-search" aria-label="Search trips" value="'+esc(mongoTripQuery)+'" placeholder="Search by ride ID or city">'+
@@ -1285,7 +1299,7 @@ function bindMongoTrips() {
       const url=URL.createObjectURL(new Blob(['\uFEFF',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
       const link=document.createElement('a');
       link.href=url;
-      link.download='royalcab-trips.csv';
+      link.download='easyride-trips.csv';
       document.body.append(link);
       link.click();
       link.remove();
@@ -1295,14 +1309,28 @@ function bindMongoTrips() {
     const start=(mongoTripPage-1)*perPage;
     status.textContent=matches.length ? (start+1)+'–'+Math.min(start+perPage,matches.length)+' of '+matches.length+
       ' trips · '+mongoTrips.rides.length+' imported legs' : 'No matching trips · '+mongoTrips.rides.length+' imported legs';
+    const columns=['Trip ID','Service date','Pickup → destination','Pickup date','Pickup time (ET)',
+      'Pickup address','Drop-off','Status','Passenger name','ETA','Miles'];
+    const address=value=>Array.isArray(value)?value.filter(Boolean).join(', '):value;
+    const cells=(ride,status,review)=>{
+      const pickupAddress=address(ride.pickupAddress)||ride.from||'—';
+      const destinationAddress=address(ride.dropoffAddress)||ride.to||'—';
+      const values=[ride.date,'',ride.date,ride.pickup,
+        address(ride.pickupAddress)||ride.from,
+        [address(ride.dropoffAddress)||ride.to,ride.dropoff&&ride.dropoff+' ET'].filter(Boolean).join(' · '),
+        '',ride.passenger,null,ride.miles??null];
+      return values.map((value,index)=>'<td data-label="'+columns[index+1]+'"'+
+        '>'+(index===1?'<div class="mongo-trip-route"><span><strong>Pickup</strong> '+esc(pickupAddress)+
+          '</span><span><strong>Destination</strong> '+esc(destinationAddress)+'</span></div>':
+          index===7?status:esc(value??'—'))+
+        (index===7 && review?'<small class="mongo-trip-review">'+esc(review)+'</small>':'')+'</td>').join('');
+    };
     const legRow=(ride,child=false)=>{
       const review=reviewFor(ride);
-      const cells=[ride.date,ride.pickup||'Time missing',[ride.from,ride.to].filter(Boolean).join(' → '),
-        review ? review.join(', ') : ride.date===mongoTrips.plannedDate ? 'Assigned in replay plan' : '—'];
       return '<tr class="'+(child?'mongo-trip-leg':'')+'" data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button">'+
         (child&&ride.leg?'Leg '+esc(ride.leg)+' · ':'')+esc(ride.reference)+'</button></td>'+
-        cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+
-        '<td data-mongo-trip-stage>'+mongoTripStage(ride)+'</td></tr>';
+        cells(ride,'<span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span>',
+          review?.join(', ') || (ride.date===mongoTrips.plannedDate?'Assigned in replay plan':''))+'</tr>';
     };
     const rows=matches.slice(start,start+perPage).map(([key,rides])=>{
       if (rides.length===1) return legRow(rides[0]);
@@ -1310,17 +1338,17 @@ function bindMongoTrips() {
       const [first]=rides;
       const open=expandedMongoTrips.has(key);
       const pending=rides.filter(reviewFor).length;
+      const statuses=rides.map(ride=>
+        '<span class="mongo-trip-leg-status" data-mongo-trip-id="'+esc(ride.id)+'"><small>'+esc(ride.leg||'Leg')+
+        '</small> <span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span></span>').join(' ');
       const parent='<tr class="mongo-trip-group"><td><button class="text-btn" type="button" aria-expanded="'+open+
         '" data-mongo-trip-group="'+esc(key)+'">'+(open?'▾ ':'▸ ')+esc(first.group)+
-        ' <small>· '+rides.length+' legs</small></button></td><td>'+esc(first.date)+'</td><td>'+
-        esc(first.pickup||'Time missing')+'</td><td>'+esc([first.from,first.to].filter(Boolean).join(' → '))+
-        '</td><td>'+ (pending?pending+' need review':'—')+'</td><td>'+rides.map(ride=>
-          '<span class="mongo-trip-leg-status" data-mongo-trip-id="'+esc(ride.id)+'"><small>'+esc(ride.leg||'Leg')+
-          '</small> <span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span></span>').join(' ')+'</td></tr>';
+        ' <small>· '+rides.length+' legs</small></button></td>'+
+        cells(first,statuses,pending?pending+' need review':'')+'</tr>';
       return parent+(open?rides.map(ride=>legRow(ride,true)).join(''):'');
     }).join('');
-    results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr><th>Trip / leg</th><th>Service date</th><th>Pickup (ET)</th>'+
-      '<th>Route</th><th>Review status</th><th>Trip status</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr>'+
+      columns.map(label=>'<th scope="col">'+label+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
       '<nav class="pagination" aria-label="MongoDB trips pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
       '>Previous</button><span>Page '+mongoTripPage+' of '+pages+'</span><button class="btn small" data-mongo-trip-step="1" '+
       (mongoTripPage===pages?'disabled':'')+'>Next</button></nav>':'';
@@ -1354,7 +1382,7 @@ function bindMongoTrips() {
   void load();
 }
 function tripsPage(){
- if(config.mongoOwnerRecords) return mongoTripsPage();
+ if(mongoTripsEnabled()) return mongoTripsPage();
  const view=selectTripWorkspace();boardPage=view.page;
  const options = (key,entries) => entries.map(([value,label]) =>
    '<option value="'+esc(value)+'"'+(tripFilters[key]===value?' selected':'')+'>'+esc(label)+'</option>').join('');
@@ -1415,7 +1443,7 @@ function importsPage() {
     '<section class="panel source-card"><span class="source-card-icon source-extra-icon" aria-hidden="true">'+icon('plus')+'</span><h2>Additional source</h2>'+
     '<details><summary>Name this source</summary><label>Source name <input id="additional-source-name" placeholder="Name it later" maxlength="80"></label></details></section></div>'+
     '<a class="btn small source-template" href="'+location.pathname.replace(/\/$/,'')+'/api/template">Download Excel template</a>'+
-    (state.imports.length?'<details class="panel source-import-history"><summary>Recent ProLift template imports</summary>'+
+    (state.imports.length?'<details class="panel source-import-history"><summary>Recent EASYRIDE template imports</summary>'+
       state.imports.slice(0,5).map(i=>'<div class="activity-row"><strong>'+i.count+' trip rows · '+esc(date(i.at))+'</strong>'+badge(i.confirmed?'imported':'preview')+'</div>').join('')+'</details>':'')+
     (batch&&batch.kind!=='lgtc'?previewImport():'')+'</div>';
   if (location.port === '4783' && location.pathname === '/owner/') {
@@ -1899,7 +1927,7 @@ function customerPage(){
    '<button class="btn" id="back-to-trip-history">Back to Trip history</button></div>';
  }
  const t=viewed||trips[0];
- if(!t)return '<section class="rider-welcome"><span class="eyebrow">PROLIFT RIDES</span><h1>Your next journey starts here.</h1><p>Book a pickup and follow every step in one place.</p><button class="btn primary" id="book-trip">Plan a trip</button>'+(state.trips.length?' <button class="btn" data-go="history">Trip history</button>':'')+'</section>';
+ if(!t)return '<section class="rider-welcome"><span class="eyebrow">EASYRIDE RIDES</span><h1>Your next journey starts here.</h1><p>Book a pickup and follow every step in one place.</p><button class="btn primary" id="book-trip">Plan a trip</button>'+(state.trips.length?' <button class="btn" data-go="history">Trip history</button>':'')+'</section>';
  selectedCustomerTrip=t.id;
  const d=state.drivers.find(d=>d.id===t.driverId),j=ProLiftRider.journey(t,d,lastSnapshotAt||Date.now()),identity=t.confirmedDriver;
  return '<section class="rider-journey"><header class="rider-header"><div><span class="eyebrow">YOUR JOURNEY</span><h1>'+esc(j.title)+'</h1><p>'+esc(j.description)+'</p></div></header>'+
@@ -1909,7 +1937,7 @@ function customerPage(){
  (identity?'<div class="rider-identity"><span class="avatar large">'+esc(identity.name.split(' ').map(x=>x[0]).join('').slice(0,2))+'</span><div><strong>'+esc(identity.name)+'</strong><span>'+esc(identity.vehicle)+'</span><b>'+esc(identity.plate)+'</b></div></div>':'<div class="rider-unassigned">Driver and car details will appear here after acceptance.</div>')+
  '<div class="rider-main-action">'+(identity?.phone?'<a class="btn primary" href="tel:'+esc(identity.phone)+'">'+icon('users')+' Call driver</a>':'<button class="btn primary" data-help-trip="'+t.id+'">Ask about my pickup</button>')+'</div><div class="rider-secondary">'+(identity?.phone?'<button class="text-btn" data-help-trip="'+t.id+'">Get help</button>':'')+(t.status!=='onboard'?'<button class="text-btn" data-trip="'+t.id+'" data-action="cancel">Cancel ride</button>':'')+'</div></section></div><button class="btn rider-book" id="book-trip">'+icon('plus')+' Book another ride</button></section>';
 }
-function historyPage() { const trips = state.trips.filter(t => !active(t)); return heading('TRIP RECORDS', 'Trip history', 'Completed and cancelled rides.') + `<div class="trip-card-grid">${trips.length ? trips.map(trip => tripCard(trip, true) + (user.role === 'driver' ? '<button class="btn history-ride-details" data-detail="'+esc(trip.id)+'">View ride details</button>' : '')).join('') : '<section class="panel empty"><h2>No past trips yet.</h2><p>Completed and cancelled trips appear here.</p></section>'}</div>`; }
+function historyPage() { const trips = state.trips.filter(t => !active(t)); return driverPayPanel()+heading('TRIP RECORDS', 'Trip history', 'Completed and cancelled rides.') + `<div class="trip-card-grid">${trips.length ? trips.map(trip => tripCard(trip, true) + (user.role === 'driver' ? '<button class="btn history-ride-details" data-detail="'+esc(trip.id)+'">View ride details</button>' : '')).join('') : '<section class="panel empty"><h2>No past trips yet.</h2><p>Completed and cancelled trips appear here.</p></section>'}</div>`; }
 function render() {
   if (!user || !state) return;
   const pages = {shifts:scheduleManagementPage,manage:managePage,"lgtc-settings":lgtcSettingsPage,customers:regularCustomersPage,readiness:readinessPage,scheduled:scheduledPage,help:()=>helpPage(user.role==='owner'?'Support requests':'Help requests'), overview, reports:reportsPage, messages:messagesPage, settings:settingsPage,"fleet-import":fleetImportPage, schedule: schedulePageView, trips: tripsPage, fleet: fleetPage, imports: importsPage, "trip-sources": importsPage, drivers: driversPage, activity: activityPage, work: driverPage, vehicle:driverVehiclePage, "driver-messages":()=>helpPage("Messages"), mytrips: customerPage, history: historyPage };
@@ -1933,6 +1961,7 @@ function render() {
   if (tab !== 'overview') bindWorkspacePanels(workspaceView === tab);
   bindMissedPickupDemo();
   bindMongoTrips();
+  bindDriverPay();
   if ($('#mongo-owner-review')) $('#mongo-owner-review').onclick=()=>run(async()=>{
     const {review}=await api('/api/lgtc-replay');
     modal('<h2>Owner review · '+review.length+' rides</h2><div class="table-scroll"><table><thead><tr><th>Ride</th><th>Reason</th></tr></thead><tbody>'+
@@ -2072,7 +2101,7 @@ function bindWorkspacePanels(detached) {
       }
       url.searchParams.set('workspacePanel',tab);
       url.searchParams.set('section',id);
-      if (!window.open(url,'royalcab-'+tab+'-'+id,'popup,width=960,height=760')) toast('Allow pop-ups for RoyalCab to open this panel.',true);
+      if (!window.open(url,'royalcab-'+tab+'-'+id,'popup,width=960,height=760')) toast('Allow pop-ups for EASYRIDE to open this panel.',true);
     });
     {
       const summary = document.createElement('span');
@@ -2090,7 +2119,7 @@ function accentFirstPopupCard(dialog) {
   dialog.querySelector('.ride-explanation, .fleet-inspector, .notice, .quick-nearest, .candidate-row, .fleet-record-card, .panel, .trip-card')
     ?.classList.add('popup-feature-card');
 }
-function modal(content, {compact=false} = {}) { const el = $('#modal'); el.innerHTML = `<div class="modal-top"><span class="eyebrow">PROLIFT</span><button class="icon-btn" id="close-modal" aria-label="Close dialog">×</button></div>${content}`; accentFirstPopupCard(el); el.classList.remove('workspace-dialog-expanded','workspace-dialog-hidden','workspace-dialog-floating'); el.style.removeProperty('--dialog-height'); el.classList.toggle('vehicle-details-dialog',compact); if (!el.open) el.showModal(); else if (!el.matches(':modal')) { el.close(); el.showModal(); } if (!compact) bindDialogLayout(el); $('#close-modal').onclick = () => { el.close(); render(); }; el.oncancel = () => setTimeout(() => { if (!el.open) render(); }); }
+function modal(content, {compact=false} = {}) { const el = $('#modal'); el.innerHTML = `<div class="modal-top"><span class="eyebrow">EASYRIDE</span><button class="icon-btn" id="close-modal" aria-label="Close dialog">×</button></div>${content}`; accentFirstPopupCard(el); el.classList.remove('workspace-dialog-expanded','workspace-dialog-hidden','workspace-dialog-floating'); el.style.removeProperty('--dialog-height'); el.classList.toggle('vehicle-details-dialog',compact); if (!el.open) el.showModal(); else if (!el.matches(':modal')) { el.close(); el.showModal(); } if (!compact) bindDialogLayout(el); $('#close-modal').onclick = () => { el.close(); render(); }; el.oncancel = () => setTimeout(() => { if (!el.open) render(); }); }
 function bindDialogLayout(dialog) {
   const header = dialog.querySelector('.modal-top');
   const controls = document.createElement('div');
@@ -2254,10 +2283,86 @@ function appearanceControl() {
     appearanceOptions.map(([value,label])=>'<option value="'+value+'" '+(document.documentElement.dataset.appearance===value?'selected':'')+'>'+label+'</option>').join('')+
     '</select></label></section>';
 }
+function driverPaySettingsPanel() {
+  if (!config.driverPay) return '';
+  return '<section class="panel settings-panel"><form id="driver-pay-rates"><h2>Driver pay rates</h2>'+
+    '<label>Driver<select name="driverId" required><option value="">Choose a driver</option></select></label>'+
+    '<label>Rate type<select name="basis"><option value="mile">Per mile</option><option value="hour">Per hour</option></select></label>'+
+    '<label>Rate (USD)<input name="rate" type="number" min="0.01" max="1000" step="0.01" required></label>'+
+    '<button type="submit" class="btn primary" disabled>Save rate</button><p role="status">Loading drivers…</p></form></section>';
+}
+let driverPayDate='';
+const payMoney = cents => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(cents/100);
+function driverPayPanel() {
+  if (!config.driverPay || user.role!=='driver') return '';
+  return '<section class="panel settings-panel" id="driver-pay-history"><h2>Trip earnings</h2>'+
+    '<label>Pay date (ET)<input type="date" value="'+esc(driverPayDate)+'"></label>'+
+    '<p role="status">Loading trip earnings…</p><div data-pay-rides></div></section>';
+}
+function bindDriverPay() {
+  const form=$('#driver-pay-rates');
+  if (form) {
+    const {driverId,basis,rate}=form.elements;
+    const status=form.querySelector('[role=status]');
+    const save=form.querySelector('button');
+    let rates=[];
+    const selectRate=()=>{
+      const selected=rates.find(driver=>driver.id===driverId.value);
+      basis.value=selected?.basis||'mile';
+      rate.value=selected?.rateCents==null?'':(selected.rateCents/100).toFixed(2);
+      save.disabled=!selected;
+    };
+    driverId.onchange=selectRate;
+    api('/api/driver-pay/rates').then(result=>{
+      if(!form.isConnected) return;
+      rates=result.drivers;
+      driverId.append(...rates.map(driver=>new Option(driver.name,driver.id)));
+      status.textContent='Rates apply when a trip is completed. Hourly pay covers pickup through drop-off.';
+    }).catch(error=>{status.textContent=error.message;});
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      const selected=rates.find(driver=>driver.id===driverId.value);
+      if(!selected || !form.reportValidity()) return;
+      const values={driverId:selected.id,basis:basis.value,rateCents:Math.round(Number(rate.value)*100)};
+      save.disabled=true;
+      try {
+        await api('/api/driver-pay/rates',values);
+        Object.assign(selected,values);
+        status.textContent='Rate saved for '+selected.name+'.';
+      } catch(error) { status.textContent=error.message; }
+      finally { save.disabled=!driverId.value; }
+    };
+  }
+  const panel=$('#driver-pay-history');
+  if (!panel) return;
+  const date=panel.querySelector('input');
+  const status=panel.querySelector('[role=status]');
+  const result=panel.querySelector('[data-pay-rides]');
+  let sequence=0;
+  const load=async()=>{
+    const request=++sequence;
+    status.textContent='Loading trip earnings…';
+    result.replaceChildren();
+    try {
+      const summary=await api('/api/driver-pay/day'+(date.value?'?date='+encodeURIComponent(date.value):''));
+      if(request!==sequence || !panel.isConnected) return;
+      date.value=driverPayDate=summary.date;
+      const pending=summary.rides.filter(ride=>ride.amountCents===null).length;
+      status.textContent=payMoney(summary.totalCents)+' calculated total'+(pending?' · '+pending+' pending calculation':'');
+      result.innerHTML=summary.rides.length?'<div class="table-scroll"><table><thead><tr><th>Trip</th><th>Basis</th><th>Amount</th></tr></thead><tbody>'+
+        summary.rides.map(ride=>'<tr><td>'+esc(ride.reference)+'</td><td>'+
+          esc(ride.basis && ride.rateCents!==null ? payMoney(ride.rateCents)+' / '+ride.basis : 'Rate missing')+'</td><td>'+
+          (ride.amountCents===null?'Pending calculation':payMoney(ride.amountCents))+'</td></tr>').join('')+
+        '</tbody></table></div>':'<p>No completed trips recorded for this date.</p>';
+    } catch(error) { if(request===sequence&&panel.isConnected)status.textContent=error.message; }
+  };
+  date.onchange=()=>{driverPayDate=date.value;void load();};
+  void load();
+}
 function settingsPage(){
   const s=state.settings||{};
-  return heading('OPERATIONS SETTINGS','Dispatch settings','These settings apply to automatic assignment and one-time customer reminders.')+
-    '<section class="panel settings-panel"><form id="operations-settings"><h2>Automatic driver offers</h2><p>Start looking for the nearest eligible driver this many minutes before pickup.</p><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="dispatch-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="dispatch-lead">15 minutes</button></div><label>Driver-offer lead time (minutes)<input id="dispatch-lead" type="number" min="1" max="180" step="1" required value="'+(s.dispatchLeadMinutes||15)+'"></label><h2>Urgent pickup recovery</h2><p>After a declined or expired offer, alert a small group when pickup is close. The first acceptance wins.</p><label class="checkbox-label"><input id="urgent-enabled" type="checkbox" '+(s.urgentGroupEnabled?'checked':'')+'> Enable urgent group offers</label><label>Urgent window (minutes before pickup)<input id="urgent-minutes" type="number" min="1" max="30" required value="'+(s.urgentGroupMinutes||5)+'"></label><label>Drivers per group<select id="urgent-size"><option value="2" '+(s.urgentGroupSize===2?'selected':'')+'>2 drivers</option><option value="3" '+(s.urgentGroupSize!==2?'selected':'')+'>3 drivers</option></select></label><h2>Customer pickup reminder</h2><p>Send once before pickup, after a driver has confirmed. If confirmation happens inside this window, the confirmation message covers the reminder.</p><label class="checkbox-label"><input id="reminders-enabled" type="checkbox" '+(s.customerRemindersEnabled?'checked':'')+'> Enable customer pickup reminders</label><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="reminder-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="reminder-lead">15 minutes</button></div><label>Customer reminder lead time (minutes)<input id="reminder-lead" type="number" min="1" max="180" step="1" required value="'+(s.customerReminderMinutes||10)+'"></label><h2>Confirmation message</h2><p>Queued immediately when the driver accepts. Includes pickup time, driver name and phone, car model, plate and destination.</p><label>Company name<input id="company-name" required maxlength="80" value="'+esc(s.companyName||'ProLift')+'"></label><label>Message timezone<input id="message-timezone" required value="'+esc(s.timezone||'America/New_York')+'"></label><div class="notice">'+icon('bell')+' Demo delivery: messages are saved in Messages and the customer app. No SMS leaves this computer.</div><button class="btn primary" type="submit">Save settings</button></form></section>';
+  return heading('OPERATIONS SETTINGS','Dispatch settings','These settings apply to automatic assignment and one-time customer reminders.')+driverPaySettingsPanel()+
+    '<section class="panel settings-panel"><form id="operations-settings"><h2>Automatic driver offers</h2><p>Start looking for the nearest eligible driver this many minutes before pickup.</p><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="dispatch-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="dispatch-lead">15 minutes</button></div><label>Driver-offer lead time (minutes)<input id="dispatch-lead" type="number" min="1" max="180" step="1" required value="'+(s.dispatchLeadMinutes||15)+'"></label><h2>Urgent pickup recovery</h2><p>After a declined or expired offer, alert a small group when pickup is close. The first acceptance wins.</p><label class="checkbox-label"><input id="urgent-enabled" type="checkbox" '+(s.urgentGroupEnabled?'checked':'')+'> Enable urgent group offers</label><label>Urgent window (minutes before pickup)<input id="urgent-minutes" type="number" min="1" max="30" required value="'+(s.urgentGroupMinutes||5)+'"></label><label>Drivers per group<select id="urgent-size"><option value="2" '+(s.urgentGroupSize===2?'selected':'')+'>2 drivers</option><option value="3" '+(s.urgentGroupSize!==2?'selected':'')+'>3 drivers</option></select></label><h2>Customer pickup reminder</h2><p>Send once before pickup, after a driver has confirmed. If confirmation happens inside this window, the confirmation message covers the reminder.</p><label class="checkbox-label"><input id="reminders-enabled" type="checkbox" '+(s.customerRemindersEnabled?'checked':'')+'> Enable customer pickup reminders</label><div class="timing-presets"><button type="button" class="btn" data-timing="10" data-timing-field="reminder-lead">10 minutes</button><button type="button" class="btn" data-timing="15" data-timing-field="reminder-lead">15 minutes</button></div><label>Customer reminder lead time (minutes)<input id="reminder-lead" type="number" min="1" max="180" step="1" required value="'+(s.customerReminderMinutes||10)+'"></label><h2>Confirmation message</h2><p>Queued immediately when the driver accepts. Includes pickup time, driver name and phone, car model, plate and destination.</p><label>Company name<input id="company-name" required maxlength="80" value="'+esc(s.companyName||'EASYRIDE')+'"></label><label>Message timezone<input id="message-timezone" required value="'+esc(s.timezone||'America/New_York')+'"></label><div class="notice">'+icon('bell')+' Demo delivery: messages are saved in Messages and the customer app. No SMS leaves this computer.</div><button class="btn primary" type="submit">Save settings</button></form></section>';
 }
 function messagesPage(){
   const messages=(state.customerMessages||[]).slice(0,100);
@@ -2604,7 +2709,7 @@ function bindFleetPanelLayout() {
       url.searchParams.set('fleetPanel',key);
       const popup = window.open(url,'royalcab-fleet-'+key,'popup,width=960,height=760');
       if (popup) fleetPanelWindows.set(key,popup);
-      else toast('Allow pop-ups for RoyalCab to open this panel.',true);
+      else toast('Allow pop-ups for EASYRIDE to open this panel.',true);
     };
     controls.append(pop);
     heading.append(controls);
@@ -3327,11 +3432,12 @@ function ownerShell(content,retainedMap){
      (current===id?' aria-current="page"':'')+'>'+esc(label)+'</button>').join('')+'</details>').join('');
  $('#app').innerHTML='<a class="skip-link" href="#main-content">Skip to main content</a><div class="simple-owner role-owner owner-portal">'+
    '<aside class="owner-sidebar"><button type="button" id="owner-menu-toggle" aria-label="Toggle navigation" aria-controls="owner-navigation" aria-expanded="'+ownerMenuOpen+'">☰</button>'+
-   '<nav id="owner-navigation" aria-label="Main navigation"'+(ownerMenuOpen?'':' hidden')+'><button class="owner-sidebar-brand" data-owner-nav="overview">RoyalCab</button>'+menu+'</nav></aside>'+
-   '<div class="owner-portal-content"><header class="owner-portal-bar"><span>'+esc(group?.[0]||'RoyalCab')+' / <strong>'+
+   '<nav id="owner-navigation" aria-label="Main navigation"'+(ownerMenuOpen?'':' hidden')+'><button class="owner-sidebar-brand" data-owner-nav="overview">'+easyrideLogo+'</button>'+menu+'</nav></aside>'+
+   '<div class="owner-portal-content"><header class="owner-portal-bar"><span>'+esc(group?.[0]||'EASYRIDE')+' / <strong>'+
    esc(group?.[1].find(([id])=>id===current)?.[1]||'Owner workspace')+'</strong></span><div class="owner-account"><span id="connection" class="connection">'+
    (connected?'Connected':'Reconnecting…')+'</span><button class="icon-btn" id="logout" aria-label="Sign out">'+icon('logout')+'</button></div></header>'+
    '<main id="main-content" tabindex="-1"><div class="page-content '+(tab==='overview'?'fleet-home':'')+'">'+content+'</div></main></div></div><dialog id="modal"></dialog>';
+ $('#logout').onclick=signOut;
  $('#owner-menu-toggle').onclick=()=>{
    ownerMenuOpen=!ownerMenuOpen;
    $('#owner-navigation').hidden=!ownerMenuOpen;

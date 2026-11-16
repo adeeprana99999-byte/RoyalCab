@@ -280,7 +280,7 @@ function dispatchCandidates(plan, source, state, places, validate, now, pilot) {
     const reasons = [];
     if (!at || at < now) reasons.push('A future, unambiguous Eastern pickup time is required');
     if (!pickup || !destination) reasons.push(pilot ? 'Pickup and drop-off must match verified street, city, state and ZIP' :
-      'Pickup and drop-off must match verified ProLift demo locations');
+      'Pickup and drop-off must match verified EASYRIDE demo locations');
     if (pilot ? !/^[2-9]\d{2}[2-9]\d{6}$/.test(mobile) : !/^[2-9]\d{2}55501\d{2}$/.test(mobile)) {
       reasons.push(pilot ? 'A valid rider phone is required' : 'Local dispatch testing requires a reserved dummy rider number');
     }
@@ -290,6 +290,7 @@ function dispatchCandidates(plan, source, state, places, validate, now, pilot) {
       requirements:leg.mode==='accessible'?'wheelchair':''}],now)[0];
     if (checked.errors.length) { held.push({reference:leg.reference,reasons:checked.errors}); continue; }
     const trip = checked.trip;
+    if (Number.isFinite(leg.miles) && leg.miles > 0) trip.miles = leg.miles;
     trip.plannedDriverId = run.driverId;
     trip.plannedPickupAt = trip.pickupAt;
     trip.plannedEndAt = easternPickup(leg.serviceDate,leg.end);
@@ -437,6 +438,13 @@ function plan(batch, input, { roster = [], preferences = new Map(), allowEmptyRo
   }
   const unplanned = [], ready = [];
   const partners = pairedRides(rows);
+  const itineraryKeys = new Map();
+  for (const row of rows) {
+    if (!row.customerKey || !/[ABC]$/.test(row.reference)) continue;
+    const key=JSON.stringify([row.customerKey,row.program,row.serviceDate,row.group]);
+    if (!itineraryKeys.has(key)) itineraryKeys.set(key,row.row);
+    row.itineraryKey=itineraryKeys.get(key);
+  }
   for (const row of rows) {
     const p = profiles.get(row.code);
     let reasons = [...row.issues], seats;
@@ -524,20 +532,26 @@ function plan(batch, input, { roster = [], preferences = new Map(), allowEmptyRo
     const held = [];
     const paired = new Set();
     if (keepPairs) {
-      const byRow = new Map(ready.map(ride => [ride.row,ride]));
-      const pairs = ready.filter(ride => ride.riderJourney?.direction === 'Outbound' && byRow.has(ride.riderJourney.pairedRow))
-        .map(ride => [ride,byRow.get(ride.riderJourney.pairedRow)]);
-      pairs.sort((a,b) => Number(b.some(ride => ride.mode === 'accessible')) - Number(a.some(ride => ride.mode === 'accessible')) || compare(a[0],b[0]));
-      for (const [outbound,back] of pairs) {
-        if (outbound.end + buffer > back.start) continue;
-        const regularId = outbound.regularDriver?.id;
-        const needsAccessible = outbound.mode === 'accessible' || back.mode === 'accessible';
-        const car = cars.filter(v => suitable(v,outbound) && suitable(v,back) && fitsTime(v,outbound) && fitsTime(v,back))
-          .sort((a,b) => Number(!needsAccessible && a.accessible) - Number(!needsAccessible && b.accessible) ||
-            Number(b.driverId === regularId) - Number(a.driverId === regularId) || a.seats - b.seats)[0];
+      const itineraries=new Map();
+      for (const ride of ready) {
+        if (ride.itineraryKey == null) continue;
+        if (!itineraries.has(ride.itineraryKey)) itineraries.set(ride.itineraryKey,[]);
+        itineraries.get(ride.itineraryKey).push(ride);
+      }
+      const groups=[...itineraries.values()].filter(rides=>rides.length>1);
+      for (const rides of groups) rides.sort((a,b)=>a.reference.localeCompare(b.reference));
+      groups.sort((a,b)=>Number(b.some(ride=>ride.mode==='accessible'))-
+        Number(a.some(ride=>ride.mode==='accessible'))||compare(a[0],b[0]));
+      for (const rides of groups) {
+        if (rides.some((ride,i)=>i>0 && rides[i-1].end+buffer>ride.start)) continue;
+        const regularId=rides[0].regularDriver?.id;
+        const needsAccessible=rides.some(ride=>ride.mode==='accessible');
+        const car=cars.filter(v=>rides.every(ride=>suitable(v,ride)&&fitsTime(v,ride)))
+          .sort((a,b)=>Number(!needsAccessible&&a.accessible)-Number(!needsAccessible&&b.accessible)||
+            Number(b.driverId===regularId)-Number(a.driverId===regularId)||a.seats-b.seats)[0];
         if (!car) continue;
-        for (const ride of [outbound,back]) {
-          allocate(car,ride,regularId && car.driverId === regularId ? 'Regular driver' : 'Same driver for round trip');
+        for (const ride of rides) {
+          allocate(car,ride,regularId&&car.driverId===regularId?'Regular driver':'Same driver for linked legs');
           paired.add(ride.row);
         }
       }
@@ -575,6 +589,7 @@ function plan(batch, input, { roster = [], preferences = new Map(), allowEmptyRo
     for (const ride of v.trips) {
       ride.assignment = assignmentFor(v,ride);
       if (!ride.assignment && named && rowsOnCar.has(ride.riderJourney?.pairedRow)) ride.assignment = 'Same driver for round trip';
+      if (!ride.assignment && named && ride.itineraryKey != null && v.trips.some(other=>other.row!==ride.row && other.itineraryKey===ride.itineraryKey)) ride.assignment = 'Same driver for linked legs';
       if (ride.assignment === 'Regular driver') delete ride.alternateReason;
     }
     v.trips.sort(byPickup);

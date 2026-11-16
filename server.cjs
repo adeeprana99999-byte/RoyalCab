@@ -21,7 +21,7 @@ const DriverDay = require('./driver-day.cjs');
 const Road = require('./road-routing.cjs');
 const Pilot = require('./road-pilot.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
-function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer, ownerRecords, mongoReplay } = {}) {
+function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true, initialSettings={}, roadMatrix, pilotConfig, hostedDemoPassword, hostedDemoInvite, publicDemo = false, sheetFile, fleetImportPath, advanceRideClock, claimTestOffer, ownerRecords, mongoReplay, hostedAccounts } = {}) {
   const hostedDemo=publicDemo||hostedDemoPassword!==undefined;
   const privateDemo=hostedDemo&&!publicDemo;
   if ((ownerRecords || mongoReplay) && !privateDemo) throw Error('MongoDB Owner records require private hosted mode.');
@@ -33,6 +33,22 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     throw Error('The hosted demo needs a preview password of at least 24 characters.');
   }
   if (process.env.NODE_ENV === 'production'&&!hostedDemo) throw new Error('Production startup is disabled until secure user accounts and operational imports are configured.');
+  const accounts = new Map();
+  if (hostedAccounts !== undefined) {
+    if (!privateDemo || !Array.isArray(hostedAccounts)) throw Error('EASYRIDE accounts require private hosted mode.');
+    for (const account of hostedAccounts) {
+      const {role,phone,password,driverId,name}=account;
+      if (!['owner','driver','customer'].includes(role) || !/^\+[1-9]\d{7,14}$/.test(phone) ||
+          typeof password !== 'string' || password.length < 12 || password.length > 128 ||
+          accounts.has(phone) || (role==='driver' && !['d1','d2','d3'].includes(driverId))) {
+        throw Error('Invalid EASYRIDE hosted account configuration.');
+      }
+      const salt=crypto.randomBytes(16);
+      accounts.set(phone,{role,phone,driverId,name,salt,digest:crypto.scryptSync(password,salt,32)});
+    }
+    if (![...accounts.values()].some(account=>account.role==='owner')) throw Error('Configure a hosted Owner account.');
+  }
+  const hostedPhoneLogin = hostedAccounts !== undefined;
   const previewDigest=privateDemo?crypto.createHash('sha256').update('preview:'+hostedDemoPassword).digest():null;
   if (hostedDemoInvite !== undefined && (!privateDemo || !/^[A-Za-z0-9_-]{32,128}$/.test(hostedDemoInvite))) {
     throw Error('Set PROLIFT_PREVIEW_INVITE_TOKEN to a random URL-safe token of 32 to 128 characters.');
@@ -75,6 +91,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   } : { scripts:'', styles:'', images:'', connect:'', extra:'' };
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  const driverPay = hostedDemo ? null : require('./driver-pay.cjs').createDriverPay(db);
   const fleetDb = fleetImportPath ? new DatabaseSync(fleetImportPath) : db;
   fleetDb.exec('CREATE TABLE IF NOT EXISTS driver_profile_photos(driver_id TEXT PRIMARY KEY, jpeg BLOB NOT NULL, version TEXT NOT NULL)');
   fleetDb.exec('CREATE TABLE IF NOT EXISTS fleet_import_records(kind TEXT NOT NULL, record_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind,record_key))');
@@ -375,12 +392,22 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     '/api/lgtc/customer', '/api/driver/tracking', '/api/driver/location',
   ]);
   const previewLoginAssets = new Set(['/', '/api/config', '/api/session', '/app.js', '/board.js',
-    '/styles.css', '/interface.css', '/favicon.svg', '/leaflet.js', '/leaflet.css', '/map-camera.js',
+    '/styles.css', '/interface.css', '/favicon.svg', '/easyride-brand.png', '/leaflet.js', '/leaflet.css', '/map-camera.js',
     '/rider-view.js', '/ride-explanation.js', '/lgtc-view.js', '/google-fleet-map.js']);
   const server = http.createServer(async (req, res) => {
     let needsPreviewAccess=false;
     if (hostedDemo && req.method==='GET' && req.url==='/healthz') return json(res,200,{ok:true});
-    if (privateDemo) {
+    if (hostedPhoneLogin) {
+      const pathname=req.url.split('?')[0];
+      const authenticated=session(req)?.hostedPhone === true;
+      if (pathname==='/api/demo-login' || pathname.startsWith('/api/auth/')) {
+        return json(res,403,{error:'Demo sign-in is unavailable.'});
+      }
+      if (!authenticated && !(req.method==='GET' && previewLoginAssets.has(pathname)) &&
+          !(req.method==='POST' && pathname==='/api/hosted-login')) {
+        return json(res,401,{error:'Sign in to EASYRIDE.'});
+      }
+    } else if (privateDemo) {
       if (req.method === 'GET' && req.url.split('?')[0] === '/preview') {
         const nonce = crypto.randomBytes(16).toString('base64');
         res.writeHead(200, {
@@ -427,7 +454,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           res.writeHead(302, { Location: '/preview', 'Cache-Control': 'no-store' });
           return res.end();
         }
-        else return json(res,401,{error:'RoyalCab preview sign-in required'});
+        else return json(res,401,{error:'EASYRIDE preview sign-in required'});
       }
     }
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -476,7 +503,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
-        return json(res,200,{mode:pilot?'pilot':'demo',publicDemo,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoReplay:!!mongoReplay&&!needsPreviewAccess&&user?.role==='owner',mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+        return json(res,200,{mode:pilot?'pilot':'demo',localPhoneLogin:!pilot&&!hostedDemo,publicDemo,hostedPhoneLogin,driverPay:!!driverPay,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoReplay:!!mongoReplay&&!needsPreviewAccess&&user?.role==='owner',mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
@@ -495,6 +522,37 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         if (!pilot.authenticate(b.role,b.driverId,b.code)) return json(res,401,{error:'Check the pilot ID or access code.'});
         const account=b.role==='owner'?{role:'owner',id:'pilot-owner',name:'Fleet owner'}:
           {role:'driver',driverId:b.driverId,name:load().drivers.find(d=>d.id===b.driverId).name};
+        return json(res,200,{user:signIn(res,account)});
+      }
+      if (hostedPhoneLogin && url.pathname==='/api/hosted-login' && req.method==='POST') {
+        throttle('hosted-login:'+req.socket.remoteAddress,12,60000);
+        const {role,phone,password}=await body(req);
+        const digits=String(phone??'').replace(/[\s()+.-]/g,'');
+        const mobile='+'+(digits.length===10?'1'+digits:digits);
+        const account=accounts.get(mobile);
+        const salt=account?.salt || Buffer.alloc(16);
+        const digest=crypto.scryptSync(typeof password==='string' ? password.slice(0,128) : '',salt,32);
+        if (!account || account.role!==role || typeof password!=='string' || password.length>128 ||
+            !crypto.timingSafeEqual(digest,account.digest)) {
+          return json(res,401,{error:'Check the mobile number and password for this workspace.'});
+        }
+        const driver=role==='driver' && load().drivers.find(d=>d.id===account.driverId);
+        if (role==='driver' && !driver) return json(res,401,{error:'This driver account is unavailable.'});
+        const identity=role==='driver'?{driverId:driver.id,name:driver.name}:
+          role==='customer'?{phone:mobile,name:account.name||'Customer'}:{id:'owner:'+mobile,name:account.name||'Fleet owner'};
+        return json(res,200,{user:signIn(res,{role,...identity,hostedPhone:true})});
+      }
+      if (url.pathname === '/api/auth/demo-password' && req.method === 'POST') {
+        if (hostedDemo) return json(res,404,{error:'Local test sign-in is unavailable.'});
+        throttle('demo-password:'+req.socket.remoteAddress,20,60000);
+        const {role,phone,password}=await body(req);
+        const digits=String(phone??'').replace(/[\s()+.-]/g,'');
+        const mobile=digits.length===10?'1'+digits:digits;
+        const driver=role==='driver' && load().drivers.find(d=>['d1','d2','d3'].includes(d.id) && d.phone==='+'+mobile);
+        const account=role==='owner' && mobile==='15550103001' ? {role,name:'Fleet owner',id:'owner-demo'}
+          : role==='customer' && mobile==='15550102001' ? {role,name:'Alex Morgan',phone:'+'+mobile}
+          : driver ? {role,name:driver.name,driverId:driver.id} : null;
+        if (!account || password!=='Ride1234') return json(res,401,{error:'Check the mobile number and password for this workspace.'});
         return json(res,200,{user:signIn(res,account)});
       }
       if (url.pathname === '/api/demo-login' && req.method === 'POST') {
@@ -539,6 +597,19 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         res.setHeader('Set-Cookie', 'prolift=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res, 200, { ok: true });
       }
       if (url.pathname.startsWith('/api/')) requireRole(user);
+      if (driverPay && url.pathname === '/api/driver-pay/rates' && ['GET','POST'].includes(req.method)) {
+        requireRole(user,'owner');
+        const drivers=load().drivers;
+        if (req.method==='GET') return json(res,200,{drivers:driverPay.rates(drivers)});
+        const {driverId,basis,rateCents}=await body(req);
+        if (!drivers.some(driver=>driver.id===driverId&&!driver.demoRunId)) throw Error('Choose a driver in your roster.');
+        driverPay.set(driverId,basis,rateCents);
+        return json(res,200,{ok:true});
+      }
+      if (driverPay && url.pathname === '/api/driver-pay/day' && req.method === 'GET') {
+        requireRole(user,'driver');
+        return json(res,200,driverPay.day(user.driverId,url.searchParams.get('date') || driverPay.today(clock())));
+      }
       if (url.pathname === '/api/fleet/availability' && req.method === 'POST') {
         requireRole(user,'owner');
         const {driverId,kind,disabled} = await body(req);
@@ -881,7 +952,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       if(['/api/reports','/api/reports.csv'].includes(url.pathname)&&req.method==='GET'){
         requireRole(user,'owner');const from=url.searchParams.has('from')?Date.parse(url.searchParams.get('from')):0,to=url.searchParams.has('to')?Date.parse(url.searchParams.get('to')):clock()+86400000;
         const report=Operations.reports(load(),{from,to,group:url.searchParams.get('group')||'driver'});
-        if(url.pathname.endsWith('.csv')){res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="ProLift-${report.group}-report.csv"`,'Cache-Control':'no-store'});return res.end(Operations.csv(report));}
+        if(url.pathname.endsWith('.csv')){res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="EASYRIDE-${report.group}-report.csv"`,'Cache-Control':'no-store'});return res.end(Operations.csv(report));}
         return json(res,200,report);
       }
       if (url.pathname === '/api/demo/next-ride' && req.method === 'POST') {
@@ -944,7 +1015,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       if (url.pathname === '/api/template' && req.method === 'GET') {
         requireRole(user, 'owner'); const date = new Date(clock() + 3600000).toISOString().replace(/\.\d{3}Z$/, 'Z');
         const rows = [['trip_id', 'pickup_at', 'customer_name', 'customer_phone', 'pickup', 'destination', 'passengers', 'requirements'], ['IMPORT-' + new Date(clock()).toISOString().slice(11, 19).replace(/:/g, ''), date, 'Alex Morgan', '+15550102001', 'Central Station', 'City Hospital', '1', '']];
-        const bytes = workbook(rows); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="ProLift-trip-template.xlsx"' }); return res.end(bytes);
+        const bytes = workbook(rows); res.writeHead(200, { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="EASYRIDE-trip-template.xlsx"' }); return res.end(bytes);
       }
       if (url.pathname === '/api/import/preview' && req.method === 'POST') {
         requireRole(user, 'owner'); const b = await body(req);
@@ -1266,7 +1337,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       if(summaryRoute&&req.method==='GET'){
         const s=load(),report=RideService.summary(s,s.trips.find(t=>t.id===summaryRoute[1]),user);
         if(!summaryRoute[2])return json(res,200,report);
-        res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Content-Disposition':'attachment; filename="ProLift-ride-summary.txt"'});return res.end(RideService.summaryText(report));
+        res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Content-Disposition':'attachment; filename="EASYRIDE-ride-summary.txt"'});return res.end(RideService.summaryText(report));
       }
       if(url.pathname==='/api/support'&&req.method==='POST'){
         const b=await body(req);const result=mutate(s=>RideService.request(s,s.trips.find(t=>t.id===b.tripId),user,b,clock()));publish();return json(res,200,result);
@@ -1365,11 +1436,12 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           }
           const ride=s.trips.find(t=>t.id===match[1]);
           D.action(s,ride,b.action,user,b,advanceRideClock?.(ride,b.action,user) ?? clock());
+          if (driverPay && b.action==='complete' && ride?.status==='completed') driverPay.record(ride);
           const result = { ok: true }; db.prepare('INSERT INTO requests VALUES(?,?,?,?)').run(scopedKey, fingerprint, JSON.stringify(result), clock()); return result; });
         publish(); return json(res, 200, result);
       }
       if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Endpoint not found' });
-      const assets = { '/google-fleet-map.js':['google-fleet-map.js','text/javascript'], '/lgtc-view.js':['lgtc-view.js','text/javascript'], '/ride-explanation.js':['ride-explanation.js','text/javascript'], '/leaflet.js':['leaflet.js','text/javascript'], '/leaflet.css':['leaflet.css','text/css'], '/rider-view.js':['rider-view.js','text/javascript'], '/interface.css':['interface.css','text/css'], '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/board.js': ['board.js', 'text/javascript'], '/map-camera.js': ['map-camera.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
+      const assets = { '/google-fleet-map.js':['google-fleet-map.js','text/javascript'], '/lgtc-view.js':['lgtc-view.js','text/javascript'], '/ride-explanation.js':['ride-explanation.js','text/javascript'], '/leaflet.js':['leaflet.js','text/javascript'], '/leaflet.css':['leaflet.css','text/css'], '/rider-view.js':['rider-view.js','text/javascript'], '/interface.css':['interface.css','text/css'], '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/board.js': ['board.js', 'text/javascript'], '/map-camera.js': ['map-camera.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'], '/easyride-brand.png': ['easyride-brand.png', 'image/png'] };
       const asset = assets[url.pathname]; if (!asset || req.method !== 'GET') return json(res, 404, { error: 'Not found' });
       res.writeHead(200, { 'Content-Type': asset[1] + '; charset=utf-8', 'Cache-Control': 'no-cache' });
       const contents = fs.readFileSync(path.join(__dirname, 'public', asset[0]));
@@ -1425,8 +1497,8 @@ if (require.main === module && process.env.PROLIFT_HOSTED_DEMO === '1') {
   const app = createApp(roadPilot ? {dbPath:path.join(__dirname,'data','prolift-road-pilot.sqlite')} : undefined), port = Number(process.env.PORT || 4720);
   app.server.listen(port, '127.0.0.1', () => {
     const url = `http://localhost:${port}`;
-    console.log(roadPilot ? `ProLift road ETA pilot: ${url} — demo accounts; local only` :
-      `ProLift demo: ${url} — simulated SMS and routes; local only`);
+    console.log(roadPilot ? `EASYRIDE road ETA pilot: ${url} — demo accounts; local only` :
+      `EASYRIDE demo: ${url} — simulated SMS and routes; local only`);
     if (process.argv.includes('--open') && process.platform === 'win32') require('node:child_process').execFile('explorer.exe', [url], () => {});
   });
   app.server.on('error', e => { console.error(e.message); app.close(); process.exitCode = 1; });

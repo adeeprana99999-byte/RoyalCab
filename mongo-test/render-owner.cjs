@@ -25,7 +25,7 @@ function ownerHandler(db, username, password) {
       res.writeHead(200); return res.end('OK');
     }
     if (!timingSafeEqual(digest(req.headers.authorization || ''), expected)) {
-      res.writeHead(401, {'WWW-Authenticate':'Basic realm="RoyalCab Owner", charset="UTF-8"'});
+      res.writeHead(401, {'WWW-Authenticate':'Basic realm="EASYRIDE Owner", charset="UTF-8"'});
       return res.end('Owner sign-in required.');
     }
     if (req.method !== 'GET' || !['/', '/owner/', '/owner/records'].includes(url.pathname)) {
@@ -53,12 +53,12 @@ async function renderOwnerRecords(db, url, res) {
       const rows = records.map(record=>'<tr>'+fields.map(field=>'<td>'+escapeHtml(record[field] ?? '—')+'</td>').join('')+'</tr>').join('');
       res.writeHead(200, {'Content-Type':'text/html; charset=utf-8'});
       return res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RoyalCab Owner</title><style>
+<title>EASYRIDE Owner</title><style>
 body{background:#0c1628;color:#edf4ff;font:16px system-ui;margin:0}main{max-width:1100px;margin:auto;padding:20px}
 nav{display:flex;flex-wrap:wrap;gap:8px}a{color:#b0d6ff;border:1px solid #4c6a90;padding:10px 14px;border-radius:9px}
 a[aria-current]{background:#1c5199;color:#fff}section{overflow:auto}table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:10px;border-bottom:1px solid #31445e}th{text-transform:capitalize}
-</style><main><h1>RoyalCab Owner</h1><nav aria-label="MongoDB records">${navigation}</nav>
+</style><main><h1>EASYRIDE Owner</h1><nav aria-label="MongoDB records">${navigation}</nav>
 <h2>${title}</h2><section><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></section></main></html>`);
     } catch {
       res.writeHead(503); return res.end('MongoDB records are temporarily unavailable.');
@@ -75,7 +75,7 @@ function start() {
   const server = http.createServer((req,res)=>handler(req,res).catch(()=>{
     res.writeHead(400); res.end('Invalid request.');
   }));
-  server.listen(Number(process.env.PORT || 10000),'0.0.0.0',()=>console.log('RoyalCab Owner listening'));
+  server.listen(Number(process.env.PORT || 10000),'0.0.0.0',()=>console.log('EASYRIDE Owner listening'));
   process.once('SIGTERM',()=>server.close(()=>client.close()));
 }
 
