@@ -49,7 +49,20 @@ async function start(createApp) {
     Object.assign(ownerRecords, require('./mongo-test/trip-records.cjs').tripRecords(mongoDb));
     mongoReplay = require('./mongo-test/hosted-replay.cjs').hostedReplay(mongoDb);
   }
-  const hostedAccounts=process.env.EASYRIDE_HOSTED_ACCOUNTS ? JSON.parse(process.env.EASYRIDE_HOSTED_ACCOUNTS) : undefined;
+  let hostedAccounts=process.env.EASYRIDE_HOSTED_ACCOUNTS ? JSON.parse(process.env.EASYRIDE_HOSTED_ACCOUNTS) : undefined;
+  const ownerPhone=process.env.EASYRIDE_OWNER_PHONE;
+  const ownerPassword=process.env.EASYRIDE_OWNER_PASSWORD;
+  if (ownerPhone !== undefined || ownerPassword !== undefined) {
+    if (!ownerPhone?.trim() || !ownerPassword || !Array.isArray(hostedAccounts)) {
+      throw Error('Set both EASYRIDE Owner values alongside the hosted accounts array.');
+    }
+    const owners=hostedAccounts.filter(account=>account.role==='owner');
+    if (owners.length!==1) throw Error('The EASYRIDE Owner override requires exactly one Owner entry.');
+    hostedAccounts=hostedAccounts.map(account=>account.role==='owner'
+      ? {...account,phone:ownerPhone.trim(),password:ownerPassword}
+      : account);
+    console.log('EASYRIDE loaded Owner credentials from the dedicated Owner settings.');
+  }
   const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay,hostedAccounts});
   if (mongoClient) app.server.once('close',()=>void mongoClient.close());
   const port=Number(process.env.PORT||4720);
