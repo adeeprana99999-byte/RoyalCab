@@ -534,6 +534,8 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         const digest=crypto.scryptSync(typeof password==='string' ? password.slice(0,128) : '',salt,32);
         if (!account || account.role!==role || typeof password!=='string' || password.length>128 ||
             !crypto.timingSafeEqual(digest,account.digest)) {
+          const reason=!account?'phone not configured':account.role!==role?'workspace mismatch':'password mismatch';
+          console.warn('[EASYRIDE sign-in] Rejected attempt: '+reason);
           return json(res,401,{error:'Check the mobile number and password for this workspace.'});
         }
         const driver=role==='driver' && load().drivers.find(d=>d.id===account.driverId);
