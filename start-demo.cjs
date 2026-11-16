@@ -71,6 +71,8 @@ async function start(createApp) {
   try {
     if (sheetFile) {
       console.log('EASYRIDE sheet-only test ' + url);
+    } else if (hostedAccounts !== undefined) {
+      console.log('EASYRIDE hosted phone sign-in listening on port '+app.server.address().port);
     } else {
     await post('/api/demo-login',{role:'owner'});
     await post('/api/demo/volume',{});
