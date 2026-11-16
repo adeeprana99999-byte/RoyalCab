@@ -845,6 +845,18 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         }
         return json(res,200,DispatchReview.inspect(s,trip,clock()));
       }
+      if (ownerRecords?.trip && req.method === 'GET' && url.pathname === '/api/owner/mongo-trip') {
+        requireRole(user,'owner');
+        res.setHeader('Cache-Control','private, no-store');
+        const id=url.searchParams.get('id');
+        if (!id || id.length>150) return json(res,400,{error:'Choose a trip.'});
+        try {
+          const trip=await ownerRecords.trip(id);
+          return trip ? json(res,200,{trip}) : json(res,404,{error:'Imported trip not found.'});
+        } catch {
+          return json(res,503,{error:'MongoDB trip details are temporarily unavailable.'});
+        }
+      }
       if (ownerRecords?.trips && req.method === 'GET' && url.pathname === '/api/owner/mongo-trips') {
         requireRole(user,'owner');
         res.setHeader('Cache-Control','private, no-store');

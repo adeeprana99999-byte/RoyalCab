@@ -131,7 +131,19 @@ function applySnapshot(r, explicit=false) {
     }
     // Preserve active form input and modal focus while updates continue in memory.
     if (explicit && user.role === 'driver' && $('dialog[open]')) return;
-    if (explicit || !(tab==='trips' && config.mongoOwnerRecords) && canRefreshWorkspace()) render();
+    if (!explicit && tab==='trips' && config.mongoOwnerRecords) {
+      const visibleRides = new Map((mongoTrips?.rides||[]).map(ride=>[ride.id,ride]));
+      document.querySelectorAll('[data-mongo-trip-id]').forEach(row=>{
+        const ride=visibleRides.get(row.dataset.mongoTripId);
+        const cell=row.querySelector('[data-mongo-trip-stage]');
+        if (ride && cell) {
+          const markup=mongoTripStage(ride);
+          if (cell.innerHTML!==markup) cell.innerHTML=markup;
+        }
+      });
+      return;
+    }
+    if (explicit || canRefreshWorkspace()) render();
 }
 function canRefreshWorkspace() {
   return !(tab==='drivers' && fleetPageTab==='records') &&
@@ -1195,6 +1207,34 @@ function mongoTripsPage() {
     '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button></div>'+
     '<p id="mongo-trips-status" role="status">Loading MongoDB rides…</p><div id="mongo-trips-results"></div></section>';
 }
+function mongoTripStage(ride) {
+  const replay=state?.lgtcReplay;
+  const simulated=replay?.serviceDate===ride.date && state.trips.find(
+    trip=>trip.demoRunId===replay.runId && trip.reference===ride.reference);
+  if (['completed','cancelled'].includes(ride.status)) return badge(ride.status);
+  if (simulated) return badge(simulated.status)+' <small>Replay</small>';
+  return '<span class="badge">Imported</span>';
+}
+async function openMongoTrip(id) {
+  const {trip}=await api('/api/owner/mongo-trip?id='+encodeURIComponent(id));
+  const address = fields => Array.isArray(fields) ? fields.filter(Boolean).join(', ') : fields;
+  const fields=[
+    ['Passenger',trip.passenger],['Passenger mobile',trip.phone],['Service date',trip.date],
+    ['Pickup address',address(trip.pickupAddress)],['Drop-off address',address(trip.dropoffAddress)],
+    ['Pickup time (ET)',trip.pickup],['Drop-off time (ET)',trip.dropoff],
+    ['Distance (from workbook)',trip.miles==null ? 'Unavailable' : trip.miles+' mi'],
+    ['Service code',trip.serviceCode],['Workbook row',trip.row]
+  ];
+  const held=mongoTrips?.review.find(ride=>ride.reference===trip.reference);
+  modal('<h2>'+esc(trip.reference)+'</h2><p>'+mongoTripStage(trip)+'</p>'+
+    '<section class="notice"><strong>'+esc(trip.passenger || 'Passenger not provided')+'</strong><p>'+
+    esc(address(trip.pickupAddress)||'Pickup address unavailable')+' → '+
+    esc(address(trip.dropoffAddress)||'Drop-off address unavailable')+'</p></section>'+
+    '<dl class="trip-facts">'+fields.map(([label,value])=>'<div><dt>'+esc(label)+'</dt><dd>'+
+      esc(value==null||value===''?'—':value)+'</dd></div>').join('')+'</dl>'+
+    (trip.instructions?'<h3>Workbook instructions</h3><p>'+esc(trip.instructions)+'</p>':'')+
+    (held?'<h3>Owner review</h3><ul>'+held.reasons.map(reason=>'<li>'+esc(reason)+'</li>').join('')+'</ul>':''));
+}
 function bindMongoTrips() {
   const panel=$('#mongo-trips');
   if(!panel) return;
@@ -1220,12 +1260,14 @@ function bindMongoTrips() {
       ' matching · '+mongoTrips.rides.length+' imported rides' : 'No matching rides · '+mongoTrips.rides.length+' imported rides';
     const rows=matches.slice(start,start+perPage).map(ride=>{
       const review=reasons.get(ride.reference);
-      const cells=[ride.reference,ride.date,ride.pickup||'Time missing',[ride.from,ride.to].filter(Boolean).join(' → '),
-        review ? review.join(', ') : havePlan ? 'Assigned in replay plan' : 'Imported'];
-      return '<tr>'+cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+'</tr>';
+      const cells=[ride.date,ride.pickup||'Time missing',[ride.from,ride.to].filter(Boolean).join(' → '),
+        review ? review.join(', ') : havePlan ? 'Assigned in replay plan' : '—'];
+      return '<tr data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button">'+
+        esc(ride.reference)+'</button></td>'+cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+
+        '<td data-mongo-trip-stage>'+mongoTripStage(ride)+'</td></tr>';
     }).join('');
     results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr><th>Ride ID</th><th>Service date</th><th>Pickup (ET)</th>'+
-      '<th>Route</th><th>Review status</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      '<th>Route</th><th>Review status</th><th>Trip status</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
       '<nav class="pagination" aria-label="MongoDB rides pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
       '>Previous</button><span>Page '+mongoTripPage+' of '+pages+'</span><button class="btn small" data-mongo-trip-step="1" '+
       (mongoTripPage===pages?'disabled':'')+'>Next</button></nav>':'';
@@ -1241,7 +1283,9 @@ function bindMongoTrips() {
   filter.onchange=()=>{mongoTripFilter=filter.value;mongoTripPage=1;show();};
   results.onclick=event=>{
     const button=event.target.closest('[data-mongo-trip-step]');
-    if(button){mongoTripPage+=Number(button.dataset.mongoTripStep);show();}
+    if(button){mongoTripPage+=Number(button.dataset.mongoTripStep);show();return;}
+    const row=event.target.closest('[data-mongo-trip-id]');
+    if(row) run(()=>openMongoTrip(row.dataset.mongoTripId));
   };
   $('#reload-mongo-trips').onclick=load;
   if(mongoTrips) show();

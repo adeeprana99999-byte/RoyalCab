@@ -57,7 +57,7 @@ function hostedReplay(db, {intervalMs} = {}) {
     snapshot.trips.push(...state.trips.map(ride=>({...ride,demoRunId:runId})));
     snapshot.offers.push(...state.offers);
     snapshot.events.push(...state.events);
-    snapshot.lgtcReplay={runId,at,held:plan.unplanned.length,running:!!remaining&&!error,error};
+    snapshot.lgtcReplay={runId,serviceDate,at,held:plan.unplanned.length,running:!!remaining&&!error,error};
     snapshot.revision+=revision+state.trips.length*6-remaining;
   }
   return {start,project,review:()=>plan?.unplanned.map(ride=>({reference:ride.reference,reasons:ride.reasons})) || []};

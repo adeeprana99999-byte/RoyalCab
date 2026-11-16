@@ -1590,3 +1590,8 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
 :is(dialog#modal, dialog.quick-assign) .popup-feature-card:not(.late,.danger-alert,.validation-error) :is(.quick-driver-name,.quick-eta,.quick-rank) {
   color:var(--popup-card-text);
 }
+
+#mongo-trips tr[data-mongo-trip-id] { cursor:pointer; }
+#mongo-trips tr[data-mongo-trip-id]:hover { background:var(--theme-paper,#edf4ff); }
+#mongo-trips .badge.completed, dialog#modal .badge.completed { background:#087839; color:#fff; }
+#mongo-trips .badge.cancelled, dialog#modal .badge.cancelled { background:#b91d3a; color:#fff; }
