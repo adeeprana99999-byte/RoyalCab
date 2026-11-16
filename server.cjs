@@ -861,7 +861,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         requireRole(user,'owner');
         res.setHeader('Cache-Control','private, no-store');
         try {
-          return json(res,200,{rides:await ownerRecords.trips(),review:mongoReplay?.review() || []});
+          return json(res,200,{rides:await ownerRecords.trips(),review:mongoReplay?.review() || [],plannedDate:mongoReplay?.plannedDate()});
         } catch {
           return json(res,503,{error:'MongoDB trips are temporarily unavailable.'});
         }

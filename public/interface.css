@@ -1595,3 +1595,231 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
 #mongo-trips tr[data-mongo-trip-id]:hover { background:var(--theme-paper,#edf4ff); }
 #mongo-trips .badge.completed, dialog#modal .badge.completed { background:#087839; color:#fff; }
 #mongo-trips .badge.cancelled, dialog#modal .badge.cancelled { background:#b91d3a; color:#fff; }
+
+#mongo-trips .mongo-trip-group { background:var(--theme-paper,#eaf2ff); }
+#mongo-trips .bookings-filters {
+  display:grid;
+  grid-template-columns:minmax(12rem,2fr) minmax(10rem,1fr) minmax(7rem,auto) auto;
+  gap:12px;
+  align-items:end;
+}
+#mongo-trips-status { margin:16px 0 10px; font-weight:600; }
+#mongo-trips thead th { background:#152e50; color:#fff; white-space:nowrap; }
+#mongo-trips .mongo-trip-group td:first-child { border-inline-start:3px solid #438df5; }
+#mongo-trips .mongo-trip-leg-status {
+  padding:2px 7px;
+  border:1px solid currentColor;
+  border-radius:8px;
+}
+@media (max-width:800px) {
+  #mongo-trips .bookings-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  #mongo-trips .bookings-filters label:first-child { grid-column:1/-1; }
+}
+#mongo-trips .table-scroll {
+  border:1px solid var(--theme-border,#8095af);
+  border-radius:12px;
+}
+#mongo-trips table {
+  font-family:Inter,"Segoe UI",system-ui,sans-serif;
+  font-size:14px;
+  line-height:1.5;
+}
+#mongo-trips :is(th,td) {
+  padding:12px 16px;
+  border-bottom:1px solid var(--theme-border,#8095af);
+  vertical-align:middle;
+}
+#mongo-trips tbody tr:last-child td { border-bottom:0; }
+#mongo-trips .mongo-trip-group td { font-weight:600; }
+#mongo-trips .mongo-trip-group .text-btn { font:inherit; }
+#mongo-trips .mongo-trip-leg td:first-child { padding-inline-start:32px; }
+#mongo-trips .mongo-trip-leg-status { display:inline-flex; align-items:center; gap:6px; margin:3px 8px 3px 0; }
+@media (max-width:600px) {
+  #mongo-trips :is(th,td) { padding:10px 12px; }
+  #mongo-trips .mongo-trip-leg td:first-child { padding-inline-start:24px; }
+}
+
+#mongo-trips {
+  --trip-ink:#162b44;
+  --trip-muted:#4b6078;
+  --trip-edge:#cbd8e7;
+  color:var(--trip-ink);
+}
+#mongo-trips .bookings-filters {
+  padding:16px;
+  background:#edf3fa;
+  border:1px solid var(--trip-edge);
+  border-radius:12px;
+  color:var(--trip-ink);
+}
+#mongo-trips .bookings-filters :is(input,select) {
+  min-height:42px;
+  background:#fff;
+  color:var(--trip-ink);
+}
+#mongo-trips #mongo-trips-status { color:var(--trip-muted); }
+#mongo-trips tbody tr {
+  background:#fff;
+  color:var(--trip-ink);
+}
+#mongo-trips tbody tr.mongo-trip-group { background:#e7effa; }
+#mongo-trips tbody tr.mongo-trip-leg { background:#f7faff; }
+#mongo-trips tbody tr:is(:hover,:focus-within) { background:#d8e8fc; }
+#mongo-trips tbody .text-btn { color:#174b8f; text-align:start; }
+#mongo-trips tbody .text-btn small { color:var(--trip-muted); white-space:nowrap; }
+#mongo-trips :is(th,td) { border-bottom-color:var(--trip-edge); }
+#mongo-trips td:nth-child(3) { font-variant-numeric:tabular-nums; }
+#mongo-trips td:nth-child(4) { font-weight:650; }
+
+@media (max-width:700px) {
+  #mongo-trips .table-scroll { border:0; }
+  #mongo-trips table { display:block; min-width:0; }
+  #mongo-trips thead {
+    position:absolute;
+    width:1px;
+    height:1px;
+    overflow:hidden;
+    clip-path:inset(50%);
+  }
+  #mongo-trips tbody { display:grid; gap:8px; }
+  #mongo-trips tbody tr {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    padding:12px;
+    border:1px solid var(--trip-edge);
+    border-radius:10px;
+  }
+  #mongo-trips tbody tr.mongo-trip-leg { margin-inline-start:14px; }
+  #mongo-trips tbody tr td { padding:3px 4px; border:0; overflow-wrap:anywhere; }
+  #mongo-trips tbody tr td:first-child { padding-inline-start:4px; }
+  #mongo-trips td:nth-child(n+4) { grid-column:1/-1; }
+  #mongo-trips td:nth-child(5) { color:var(--trip-muted); font-size:13px; }
+}
+
+/* Owner Trips workspace */
+.owner-portal:has(#mongo-trips) .owner-portal-content { background:#f5f6f8; }
+.owner-portal:has(#mongo-trips) .owner-portal-bar {
+  background:#fff;
+  color:#202937;
+  border-color:#e5e8ee;
+}
+#mongo-trips.bookings-panel {
+  background:transparent;
+  border:0;
+  box-shadow:none;
+}
+#mongo-trips .mongo-trip-search {
+  display:block;
+  width:min(100%,540px);
+  min-height:44px;
+  margin-bottom:18px;
+  padding:0 18px;
+  background:#fff;
+  color:#172033;
+  border:1px solid #e0e5ed;
+  border-radius:999px;
+  box-shadow:0 4px 16px #2536500c;
+}
+#mongo-trips .bookings-filters {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  padding:0;
+  background:none;
+  border:0;
+}
+#mongo-trips h1 { margin:0 auto 0 0; color:#172033; font-size:clamp(24px,3vw,32px); }
+#mongo-trips .bookings-filters label { display:flex; align-items:center; gap:8px; }
+#mongo-trips .bookings-filters select { width:auto; min-height:38px; }
+#mongo-trips .mongo-trip-filter-menu { position:relative; }
+#mongo-trips .mongo-trip-filter-menu summary {
+  padding:9px 14px;
+  border:1px solid #e0e5ed;
+  border-radius:8px;
+  background:#fff;
+  cursor:pointer;
+}
+#mongo-trips .mongo-trip-filter-menu label {
+  position:absolute;
+  z-index:3;
+  inset-inline-end:0;
+  top:calc(100% + 6px);
+  display:grid;
+  width:max-content;
+  padding:12px;
+  background:#fff;
+  border:1px solid #e0e5ed;
+  border-radius:12px;
+  box-shadow:0 6px 20px #25365020;
+}
+#mongo-trips #reload-mongo-trips { background:#2563d9; color:#fff; border-color:#2563d9; }
+#mongo-trips .table-scroll { background:#fff; border-color:#e4e8ee; box-shadow:0 8px 24px #2536500d; }
+#mongo-trips thead th { background:#fff; color:#536074; text-transform:none; }
+#mongo-trips tbody tr.mongo-trip-group { background:#fff; }
+#mongo-trips tbody tr.mongo-trip-group:has([aria-expanded="true"]) { background:#edf4ff; }
+#mongo-trips tbody tr:is(:hover,:focus-within) { background:#edf4ff; }
+#mongo-trips .mongo-trip-group td:first-child { border-inline-start:0; }
+#mongo-trips .mongo-trip-leg-status { border-color:#e0e6ee; background:#f5f7fa; }
+#mongo-trips .badge { border-radius:999px; }
+#mongo-trips .badge.completed { background:#d9f2e3; color:#145b37; }
+#mongo-trips .badge.cancelled { background:#fae2e7; color:#94213c; }
+#mongo-trips .pagination { padding:12px 0; color:#42516a; }
+@media (max-width:700px) {
+  #mongo-trips .table-scroll { background:transparent; box-shadow:none; }
+}
+
+/* Shared result tables and trip history */
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll {
+  --results-ink:#172c48;
+  --results-muted:#485e79;
+  --results-edge:#d5e0ef;
+  --results-header:#e7effc;
+  --results-row:#fff;
+  --results-hover:#eaf2ff;
+  border:1px solid var(--results-edge);
+  border-radius:12px;
+  overflow-x:auto;
+}
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll table :is(th,td) {
+  padding:11px 14px;
+  border-bottom:1px solid var(--results-edge);
+  vertical-align:middle;
+}
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll table thead th {
+  background:var(--results-header);
+  color:var(--results-ink);
+  text-transform:none;
+}
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll table tbody td {
+  background:var(--results-row);
+  color:var(--results-ink);
+}
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll table tbody td small { color:var(--results-muted); }
+:is(.owner-portal,.app-layout,dialog,.mobile-app) .table-scroll table tbody :is(tr:hover,tr:focus-within) td {
+  background:var(--results-hover);
+}
+.table-scroll table tbody tr:last-child td { border-bottom:0; }
+#mongo-trips .mongo-trip-group:has([aria-expanded="true"]) td { background:#deebff; }
+#mongo-trips .mongo-trip-leg td { background:#f3f7fd; }
+#mongo-trips .mongo-trip-leg td:first-child { border-inline-start:3px solid #5a91e9; }
+#app .badge, dialog .badge {
+  border-radius:999px;
+  padding:4px 10px;
+}
+:is(#app,dialog) .badge:is(.completed,.valid,.enabled,.available,.approved) { background:#bfeace; color:#105530; }
+:is(#app,dialog) .badge:is(.cancelled,.disabled,.offline,.needs_reassignment,.expired) { background:#ffd1da; color:#861732; }
+:is(#app,dialog) .badge:is(.offered,.awaiting_driver,.arrived,.pending) { background:#ffe1a4; color:#674200; }
+:is(#app,dialog) .badge:is(.accepted,.heading_to_pickup,.scheduled) { background:#c9dfff; color:#16478a; }
+:is(#app,dialog) .badge.onboard { background:#e4d5ff; color:#542492; }
+:is(#app,dialog) .badge.imported { background:#dde8f6; color:#344c6b; }
+.trip-card.clickable-history-card {
+  border-inline-start:4px solid #6394de;
+  box-shadow:0 3px 12px #172b4a10;
+}
+.trip-card.clickable-history-card:has(.badge.completed) { border-inline-start-color:#248853; }
+.trip-card.clickable-history-card:has(.badge.cancelled) { border-inline-start-color:#c43b5a; }
+@media (max-width:700px) {
+  #mongo-trips .table-scroll { border:0; }
+  #mongo-trips .table-scroll table tbody tr td { padding:3px 4px; border:0; }
+  #mongo-trips .table-scroll table tbody tr { overflow:hidden; }
+}

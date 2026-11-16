@@ -60,6 +60,6 @@ function hostedReplay(db, {intervalMs} = {}) {
     snapshot.lgtcReplay={runId,serviceDate,at,held:plan.unplanned.length,running:!!remaining&&!error,error};
     snapshot.revision+=revision+state.trips.length*6-remaining;
   }
-  return {start,project,review:()=>plan?.unplanned.map(ride=>({reference:ride.reference,reasons:ride.reasons})) || []};
+  return {start,project,plannedDate:()=>plan?.serviceDate,review:()=>plan?.unplanned.map(ride=>({reference:ride.reference,reasons:ride.reasons,date:ride.serviceDate})) || []};
 }
 module.exports = { hostedReplay };

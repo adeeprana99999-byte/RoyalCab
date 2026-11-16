@@ -287,7 +287,7 @@ function loginContent() {
   if (loginTab === 'driver') return `<label>Demo driver<select id="driver-choice">${config.drivers.map(d => `<option value="${d.id}">${esc(d.name)} · ${esc(d.vehicle)}</option>`).join('')}</select></label><div class="workspace-card compact">${icon('car')} Accept offers, update trips, and keep dispatch informed.</div><button class="btn primary full" id="driver-login">Open driver app ${icon('arrow')}</button>`;
   return `<div class="workspace-card compact">${icon('users')} Try the sample customer, Alex Morgan.</div><button class="btn primary full" type="button" id="demo-customer-login">Open customer app ${icon('arrow')}</button><details class="help"${codeSent ? ' open' : ''}><summary>Test mobile verification</summary><form id="customer-login"><label>Your name<input id="customer-name" maxlength="100" autocomplete="name" value="${esc(loginName || 'Alex Morgan')}" required></label><label>Mobile number<input id="customer-phone" type="tel" autocomplete="tel" placeholder="+15550102001" value="${esc(loginPhone || '+15550102001')}" required></label><p class="help">Include the country code. The sample number has an existing planned trip.</p>${codeSent ? '<label>Verification code<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>' : ''}<div id="sms-hint" class="sms-hint"></div><button class="btn primary full" type="submit">${codeSent ? 'Verify & continue' : 'Send verification code'} ${icon('arrow')}</button>${codeSent ? '<button class="btn quiet full" type="button" id="resend">Request another code</button>' : ''}</form></details>`;
 }
-async function enter(u) {stopConnection(); mongoTrips=null; mongoTripQuery=''; mongoTripFilter='all'; mongoTripPage=1; if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
+async function enter(u) {stopConnection(); expandedMongoTrips.clear(); mongoTrips=null; mongoTripQuery=''; mongoTripFilter='all'; mongoTripPage=1; if (u.role==='owner' && location.protocol==='https:') { config=await api('/api/config'); if(config.mongoOwnerRecords) fleetPageTab='records'; }state=null;lastSnapshotAt=0;fleetSourceInitialized=false; readinessData=null;readinessRevision=-1;readinessFilter='all';readinessPageNumber=1; scheduledData=null;scheduledPageNumber=1;selectedCustomerTrip=null;highlightedHistoryRide=null;customerHistoryReturn=null;user = u; if(config.mode==='pilot') config=await api('/api/config'); tab = user.role === 'owner' ? (config.sheetOnly ? 'imports' : 'overview') : user.role === 'driver' ? 'work' : 'mytrips'; await refresh(); listen(); if (u.role === 'owner') loadLgtcHistory(); }
 async function grantHostedWorkspaceAccess() {
   if (!config.needsPreviewAccess) return;
   const input = $('#workspace-password');
@@ -1197,14 +1197,20 @@ function bindTripPreferences() {
   }
 }
 let mongoTrips, mongoTripRequest, mongoTripQuery='', mongoTripFilter='all', mongoTripPage=1;
+let mongoTripPageSize=500;
+const expandedMongoTrips=new Set();
+function mongoTripsEnabled() { return !!config.mongoOwnerRecords; }
 function mongoTripsPage() {
-  return '<section class="simple-page-head"><div><h1>Trips</h1><p>Imported LGTC rides from MongoDB</p></div></section>'+
-    '<section class="bookings-panel" id="mongo-trips"><div class="bookings-filters"><label>Search rides'+
-    '<input type="search" id="mongo-trip-search" value="'+esc(mongoTripQuery)+'" placeholder="Ride ID or city"></label>'+
+  return '<section class="bookings-panel" id="mongo-trips">'+
+    '<input class="mongo-trip-search" type="search" id="mongo-trip-search" aria-label="Search trips" value="'+esc(mongoTripQuery)+'" placeholder="Search by ride ID or city">'+
+    '<div class="bookings-filters"><h1>Trips</h1><label>Showing<select id="mongo-trip-page-size" aria-label="Trips per page">'+
+    [25,50,100,200,500].map(size=>'<option'+(size===mongoTripPageSize?' selected':'')+'>'+size+'</option>').join('')+
+    '</select></label><details class="mongo-trip-filter-menu"'+(mongoTripFilter==='all'?'':' open')+'><summary>Filter</summary>'+
     '<label>Review status<select id="mongo-trip-filter"><option value="all">All rides</option>'+
     '<option value="review">Owner review</option><option value="ready">Assigned in replay plan</option>'+
-    '<option value="missing">Pickup time missing</option></select></label>'+
-    '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button></div>'+
+    '<option value="missing">Pickup time missing</option></select></label></details>'+
+    '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button>'+
+    '<button type="button" class="btn primary small" id="export-mongo-trips" disabled>Export CSV</button></div>'+
     '<p id="mongo-trips-status" role="status">Loading MongoDB rides…</p><div id="mongo-trips-results"></div></section>';
 }
 function mongoTripStage(ride) {
@@ -1225,7 +1231,7 @@ async function openMongoTrip(id) {
     ['Distance (from workbook)',trip.miles==null ? 'Unavailable' : trip.miles+' mi'],
     ['Service code',trip.serviceCode],['Workbook row',trip.row]
   ];
-  const held=mongoTrips?.review.find(ride=>ride.reference===trip.reference);
+  const held=mongoTrips?.review.find(ride=>ride.reference===trip.reference && (!ride.date || ride.date===trip.date));
   modal('<h2>'+esc(trip.reference)+'</h2><p>'+mongoTripStage(trip)+'</p>'+
     '<section class="notice"><strong>'+esc(trip.passenger || 'Passenger not provided')+'</strong><p>'+
     esc(address(trip.pickupAddress)||'Pickup address unavailable')+' → '+
@@ -1243,32 +1249,79 @@ function bindMongoTrips() {
   filter.value=mongoTripFilter;
   const show=()=>{
     if(!mongoTrips || !panel.isConnected) return;
-    const reasons=new Map(mongoTrips.review.map(ride=>[ride.reference,ride.reasons]));
-    const havePlan=mongoTrips.review.length>0;
+    const reasons=new Map(mongoTrips.review.map(ride=>[(ride.date||mongoTrips.plannedDate||'')+':'+ride.reference,ride.reasons]));
+    const havePlan=mongoTrips.review.length>0 || !!mongoTrips.plannedDate;
     filter.options[1].disabled=filter.options[2].disabled=!havePlan;
     if(!havePlan && ['review','ready'].includes(filter.value)) filter.value=mongoTripFilter='all';
+    const reviewFor=ride=>reasons.get(ride.date+':'+ride.reference);
     const query=mongoTripQuery.trim().toLowerCase();
-    const matches=mongoTrips.rides.filter(ride=>
+    const groups=new Map();
+    for(const ride of mongoTrips.rides) {
+      const key=JSON.stringify([ride.program,ride.date,ride.group]);
+      if(!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push(ride);
+    }
+    const matches=[...groups.entries()].filter(([,rides])=>rides.some(ride=>
       [ride.reference,ride.from,ride.to].join(' ').toLowerCase().includes(query) &&
       (mongoTripFilter==='all' || mongoTripFilter==='missing' && !ride.pickup ||
-        mongoTripFilter==='review' && reasons.has(ride.reference) ||
-        mongoTripFilter==='ready' && havePlan && !reasons.has(ride.reference)));
-    const perPage=25, pages=Math.max(1,Math.ceil(matches.length/perPage));
+        mongoTripFilter==='review' && reviewFor(ride) ||
+        mongoTripFilter==='ready' && ride.date===mongoTrips.plannedDate && !reviewFor(ride))));
+    const perPage=mongoTripPageSize, pages=Math.max(1,Math.ceil(matches.length/perPage));
+    const exportButton=panel.querySelector('#export-mongo-trips');
+    exportButton.disabled=!matches.length;
+    exportButton.onclick=()=>{
+      const cell=value=>{
+        const text=String(value??'');
+        return '"'+(/^[\s]*[=+@-]|^[\t\r\n]/.test(text)?"'":"")+text.replaceAll('"','""')+'"';
+      };
+      const rows=[['Trip group','Ride ID','Leg','Service date','Pickup (ET)','From','To','Review status','Trip status']];
+      const stage=document.createElement('span');
+      for(const [,rides] of matches) for(const ride of rides) {
+        stage.innerHTML=mongoTripStage(ride);
+        rows.push([ride.group,ride.reference,ride.leg,ride.date,ride.pickup,ride.from,ride.to,
+          reviewFor(ride)?.join(', ') || (ride.date===mongoTrips.plannedDate?'Assigned in replay plan':''),
+          stage.textContent.trim()]);
+      }
+      const url=URL.createObjectURL(new Blob(['\uFEFF',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
+      const link=document.createElement('a');
+      link.href=url;
+      link.download='royalcab-trips.csv';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
+    };
     mongoTripPage=Math.min(mongoTripPage,pages);
     const start=(mongoTripPage-1)*perPage;
     status.textContent=matches.length ? (start+1)+'–'+Math.min(start+perPage,matches.length)+' of '+matches.length+
-      ' matching · '+mongoTrips.rides.length+' imported rides' : 'No matching rides · '+mongoTrips.rides.length+' imported rides';
-    const rows=matches.slice(start,start+perPage).map(ride=>{
-      const review=reasons.get(ride.reference);
+      ' trips · '+mongoTrips.rides.length+' imported legs' : 'No matching trips · '+mongoTrips.rides.length+' imported legs';
+    const legRow=(ride,child=false)=>{
+      const review=reviewFor(ride);
       const cells=[ride.date,ride.pickup||'Time missing',[ride.from,ride.to].filter(Boolean).join(' → '),
-        review ? review.join(', ') : havePlan ? 'Assigned in replay plan' : '—'];
-      return '<tr data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button">'+
-        esc(ride.reference)+'</button></td>'+cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+
+        review ? review.join(', ') : ride.date===mongoTrips.plannedDate ? 'Assigned in replay plan' : '—'];
+      return '<tr class="'+(child?'mongo-trip-leg':'')+'" data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button">'+
+        (child&&ride.leg?'Leg '+esc(ride.leg)+' · ':'')+esc(ride.reference)+'</button></td>'+
+        cells.map(value=>'<td>'+esc(value||'—')+'</td>').join('')+
         '<td data-mongo-trip-stage>'+mongoTripStage(ride)+'</td></tr>';
+    };
+    const rows=matches.slice(start,start+perPage).map(([key,rides])=>{
+      if (rides.length===1) return legRow(rides[0]);
+      rides.sort((a,b)=>a.reference.localeCompare(b.reference));
+      const [first]=rides;
+      const open=expandedMongoTrips.has(key);
+      const pending=rides.filter(reviewFor).length;
+      const parent='<tr class="mongo-trip-group"><td><button class="text-btn" type="button" aria-expanded="'+open+
+        '" data-mongo-trip-group="'+esc(key)+'">'+(open?'▾ ':'▸ ')+esc(first.group)+
+        ' <small>· '+rides.length+' legs</small></button></td><td>'+esc(first.date)+'</td><td>'+
+        esc(first.pickup||'Time missing')+'</td><td>'+esc([first.from,first.to].filter(Boolean).join(' → '))+
+        '</td><td>'+ (pending?pending+' need review':'—')+'</td><td>'+rides.map(ride=>
+          '<span class="mongo-trip-leg-status" data-mongo-trip-id="'+esc(ride.id)+'"><small>'+esc(ride.leg||'Leg')+
+          '</small> <span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span></span>').join(' ')+'</td></tr>';
+      return parent+(open?rides.map(ride=>legRow(ride,true)).join(''):'');
     }).join('');
-    results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr><th>Ride ID</th><th>Service date</th><th>Pickup (ET)</th>'+
+    results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr><th>Trip / leg</th><th>Service date</th><th>Pickup (ET)</th>'+
       '<th>Route</th><th>Review status</th><th>Trip status</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-      '<nav class="pagination" aria-label="MongoDB rides pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
+      '<nav class="pagination" aria-label="MongoDB trips pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
       '>Previous</button><span>Page '+mongoTripPage+' of '+pages+'</span><button class="btn small" data-mongo-trip-step="1" '+
       (mongoTripPage===pages?'disabled':'')+'>Next</button></nav>':'';
   };
@@ -1281,10 +1334,19 @@ function bindMongoTrips() {
   };
   search.oninput=()=>{mongoTripQuery=search.value;mongoTripPage=1;show();};
   filter.onchange=()=>{mongoTripFilter=filter.value;mongoTripPage=1;show();};
+  $('#mongo-trip-page-size').onchange=event=>{mongoTripPageSize=Number(event.target.value);mongoTripPage=1;show();};
   results.onclick=event=>{
     const button=event.target.closest('[data-mongo-trip-step]');
     if(button){mongoTripPage+=Number(button.dataset.mongoTripStep);show();return;}
-    const row=event.target.closest('[data-mongo-trip-id]');
+    const group=event.target.closest('[data-mongo-trip-group]');
+    if(group){
+      const key=group.dataset.mongoTripGroup;
+      if(!expandedMongoTrips.delete(key)) expandedMongoTrips.add(key);
+      show();
+      [...results.querySelectorAll('[data-mongo-trip-group]')].find(el=>el.dataset.mongoTripGroup===key)?.focus();
+      return;
+    }
+    const row=event.target.closest('tr[data-mongo-trip-id]');
     if(row) run(()=>openMongoTrip(row.dataset.mongoTripId));
   };
   $('#reload-mongo-trips').onclick=load;
