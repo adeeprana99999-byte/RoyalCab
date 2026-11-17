@@ -1514,13 +1514,17 @@ function bindImportedFleet() {
     };
   });
   message.textContent = 'Loading fleet records…';
-  api('/api/fleet-import?list=1').then(({records,setupReadOnly}) => {
+  api('/api/fleet-import?list=1').then(({records,setupReadOnly,mongoRecords}) => {
     if (setupReadOnly) {
       panel.querySelector('.fleet-setup-disclosure').hidden = true;
       panel.querySelector('[data-add-fleet]').parentElement.hidden = true;
     }
     const vehicles = records.filter(row=>row.kind==='vehicle');
     const drivers = records.filter(row=>row.kind==='driver');
+    if (mongoRecords) {
+      kind.options[0].textContent = 'Vehicles ('+vehicles.length+')';
+      kind.options[1].textContent = 'Drivers ('+drivers.length+')';
+    }
     const setup = panel.querySelector('#fleet-setup');
     const fields = setup.elements;
     const accounts = state.drivers.filter(driver=>!driver.demoRunId);
@@ -1617,6 +1621,7 @@ function bindImportedFleet() {
     size.textContent = 'Records per page ';
     size.insertAdjacentHTML('beforeend','<select><option>10</option><option>50</option><option>100</option><option>200</option></select>');
     const limit = size.querySelector('select');
+    if (mongoRecords) limit.value = '200';
     size.className = 'fleet-page-size';
     const recordBar = document.createElement('div');
     recordBar.className = 'fleet-record-bar';
@@ -1644,7 +1649,7 @@ function bindImportedFleet() {
         '<span>Page '+recordPage+' of '+pages+'</span><button class="btn small" data-record-step="1" '+
         (recordPage===pages?'disabled':'')+'>Next</button>';
       table.innerHTML = '<table><thead><tr>'+columns.map(key=>'<th scope="col">'+esc(key==='name'?'Driver name':key)+'</th>').join('')+
-        '</tr></thead><tbody>'+matching.slice(start,end).map((row,index)=>'<tr>'+columns.map((key,column)=>'<td>'+(column===0?'<button class="text-btn" data-fleet-record="'+(start+index)+'">'+(isVehicle?'<span class="fleet-vehicle-thumb" aria-hidden="true">'+icon('car')+'</span>':'')+esc(row[key]||'View record')+'</button>':esc(row[key] || '—'))+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+        '</tr></thead><tbody>'+matching.slice(start,end).map((row,index)=>'<tr>'+columns.map((key,column)=>'<td>'+(column===0&&!mongoRecords?'<button class="text-btn" data-fleet-record="'+(start+index)+'">'+(isVehicle?'<span class="fleet-vehicle-thumb" aria-hidden="true">'+icon('car')+'</span>':'')+esc(row[key]||'View record')+'</button>':esc(row[key] || '—'))+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
       if (isVehicle) table.querySelectorAll('[data-fleet-record]').forEach(button=>{
         const row = matching[Number(button.dataset.fleetRecord)];
         renderVehiclePhoto(button,row.recordKey ?? row['Vehicle Identification Number (VIN)']?.toUpperCase());

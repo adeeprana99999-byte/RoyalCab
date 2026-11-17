@@ -47,6 +47,19 @@ async function start(createApp) {
     const mongoDb = mongoClient.db('royalcab_dispatch_test');
     ownerRecords = (url,res)=>renderOwnerRecords(mongoDb,url,res);
     Object.assign(ownerRecords, require('./mongo-test/trip-records.cjs').tripRecords(mongoDb));
+    ownerRecords.fleet = async () => {
+      const fields = {
+        driver: ['name', 'Driver Status'],
+        vehicle: ['Vehicle Name', 'Year', 'Make', 'Model', 'Vehicle Status', 'Last Known Driver']
+      };
+      const lists = await Promise.all(Object.entries(fields).map(async ([kind, columns]) => {
+        const projection = Object.fromEntries([['_id', 0], ...columns.map(column => [column, 1])]);
+        const rows = await mongoDb.collection(kind === 'driver' ? 'drivers' : 'vehicles')
+          .find({}, { projection }).sort({ [columns[0]]: 1 }).toArray();
+        return rows.map(row => ({ ...row, kind }));
+      }));
+      return lists.flat();
+    };
     mongoReplay = require('./mongo-test/hosted-replay.cjs').hostedReplay(mongoDb);
   }
   let hostedAccounts=process.env.EASYRIDE_HOSTED_ACCOUNTS ? JSON.parse(process.env.EASYRIDE_HOSTED_ACCOUNTS) : undefined;

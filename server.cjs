@@ -830,6 +830,10 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/fleet-import' && ['GET','POST'].includes(req.method)) {
         requireRole(user,'owner');
+        if (ownerRecords?.fleet && req.method === 'GET' && url.searchParams.get('list') === '1') {
+          res.setHeader('Cache-Control', 'private, no-store');
+          return json(res, 200, { records: await ownerRecords.fleet(), setupReadOnly: true, mongoRecords: true });
+        }
         if (publicDemo || fleetImportPath && req.method === 'POST') return json(res,403,{error:'Fleet uploads are available in the private owner workspace.'});
         if (req.method === 'GET') {
           const counts = fleetDb.prepare('SELECT kind, COUNT(*) AS total FROM fleet_import_records GROUP BY kind').all();
