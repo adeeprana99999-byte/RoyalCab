@@ -319,7 +319,8 @@ function lgtcPlanner(info) {
   const roster = batch.roster || [];
   const choices = roster.map(d=>'<label class="lgtc-check"><input type="checkbox" name="driverIds" value="' + esc(d.id) + '" ' +
     (settings?.driverIds?.includes(d.id) ? 'checked' : '') + '><span><strong>' + esc(d.name) + '</strong><small>' +
-    esc(d.vehicle) + ' · ' + d.seats + ' seats' + (d.accessible ? ' · Accessible' : '') + '</small><small>' +
+    esc(d.vehicle) + ' · ' + d.seats + ' seats' + (d.accessible ? ' · Accessible' : '') +
+    (d.imported ? ' · Imported fleet' : '') + '</small><small>' +
     (d.availability?.[info.serviceDate]?.unavailable ? 'Unavailable that day' :
       d.availability?.[info.serviceDate] ? lgtcInputTime(d.availability[info.serviceDate].start) + '–' +
         lgtcInputTime(d.availability[info.serviceDate].end) + ' ET' : 'No shift entered') + '</small></span></label>').join('');

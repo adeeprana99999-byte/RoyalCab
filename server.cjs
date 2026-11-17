@@ -175,9 +175,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     }
   }
   const lgtcPreferenceRows=db.prepare('SELECT customer_key,driver_id FROM lgtc_preferences');
-  function lgtcData() {
+  function lgtcData(imported = []) {
     const state = load();
-    const roster = state.drivers.filter(d => !d.demoRunId && d.locationSource !== 'replay' && (!pilot || pilot.hasDriver(d.id)));
+    const roster = state.drivers.filter(d => !d.demoRunId && d.locationSource !== 'replay' && (!pilot || pilot.hasDriver(d.id))).concat(imported);
     const drivers = new Map(roster.map(d => [d.id, {id:d.id,name:d.name}]));
     const preferences = new Map();
     for (const [key, preference] of Object.entries(state.customerPreferences)) {
@@ -191,10 +191,14 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     }
     return { roster, preferences };
   }
+  async function ownerPlannerData() {
+    return lgtcData(await ownerRecords?.plannerFleet?.());
+  }
   const lgtcAutomation = () => JSON.parse(db.prepare('SELECT body FROM lgtc_automation WHERE id=1').get()?.body || 'null') ||
     { enabled:false, driverIds:[], buffer:30, profiles:{} };
   const lgtcRoster = roster => roster.map(d => ({
-    id:d.id,name:d.name,vehicle:d.vehicle,seats:d.seats,accessible:d.capabilities.includes('wheelchair'),availability:d.availability
+    id:d.id,name:d.name,vehicle:d.vehicle,seats:d.seats,accessible:d.capabilities.includes('wheelchair'),availability:d.availability,
+    imported:d.id.startsWith('mongo:')
   }));
   function setLgtcPreference(key, driverId, roster) {
     if (driverId === null) db.prepare('DELETE FROM lgtc_preferences WHERE customer_key=?').run(key);
@@ -240,6 +244,12 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     });
     view.automation = { enabled:defaults.enabled, driverCount:defaults.driverIds.length, codes:Object.keys(defaults.profiles).sort() };
     view.roster = lgtcRoster(data.roster);
+    if (ownerRecords?.plannerFleet) {
+      view.roster = view.roster.map((driver,index) => driver.imported ? {
+        ...driver, availability:Object.fromEntries(batch.dates.map(date =>
+          [date, LGTC.driverShift(data.roster[index],date) ?? {unavailable:true}]))
+      } : driver);
+    }
     view.linked = batch.rows.some(row => Object.hasOwn(row,'customerKey'));
     view.drafts = Object.fromEntries(Object.entries(batch.drafts || {}).map(([date,draft]) => {
       const { plan, context, ...safe } = draft;
@@ -1034,7 +1044,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/lgtc/schedules' && req.method === 'GET') {
         requireRole(user, 'owner');
-        if (url.searchParams.has('id')) return json(res, 200, { batch: lgtcView(readLGTC(url.searchParams.get('id'))) });
+        if (url.searchParams.has('id')) return json(res, 200, { batch: lgtcView(readLGTC(url.searchParams.get('id')), await ownerPlannerData()) });
         const schedules = db.prepare('SELECT id,saved_at,summary FROM lgtc_schedules ORDER BY saved_at DESC LIMIT 100').all()
           .map(r => ({ id: r.id, savedAt: r.saved_at, summaries: JSON.parse(r.summary) }));
         return json(res, 200, { schedules });
@@ -1105,7 +1115,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           });
           return json(res, 200, { batch:updated, ...result });
         }
-        return json(res, 200, { batch: lgtcView(saved) });
+        return json(res, 200, { batch: lgtcView(saved, await ownerPlannerData()) });
       }
       if (url.pathname === '/api/lgtc/dispatch' && req.method === 'POST') {
         requireRole(user, 'owner');
@@ -1125,6 +1135,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           }
           const draft = schedule.drafts?.[b.serviceDate];
           if (!draft?.plan?.settings.driverIds) throw Error('Save a day plan with named drivers first.');
+          if (draft.settings.driverIds.some(id=>id.startsWith('mongo:'))) {
+            throw Error('Imported driver assignments in this draft are available for planning only.');
+          }
           if (draft.stale || draft.context !== lgtcPlanContext(schedule,b.serviceDate,draft.settings,lgtcData())) {
             throw Error('Rebuild the day plan before approving these rides.');
           }
@@ -1207,7 +1220,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/lgtc/plan' && req.method === 'POST') {
         requireRole(user, 'owner'); const b = await body(req);
-        const data = lgtcData();
+        const data = await ownerPlannerData();
         if (b.save === true) {
           const { batch, result } = editLGTC(b, schedule => {
             const plan = LGTC.plan(schedule, b, data);

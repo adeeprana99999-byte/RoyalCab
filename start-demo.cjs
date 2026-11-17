@@ -47,6 +47,29 @@ async function start(createApp) {
     const mongoDb = mongoClient.db('royalcab_dispatch_test');
     ownerRecords = (url,res)=>renderOwnerRecords(mongoDb,url,res);
     Object.assign(ownerRecords, require('./mongo-test/trip-records.cjs').tripRecords(mongoDb));
+    ownerRecords.plannerFleet = async () => {
+      const [drivers, vehicles] = await Promise.all([
+        mongoDb.collection('drivers').find({ rosterVerified:true, 'Driver Status':'Enabled', driverDisabled:{$ne:true} },
+          { projection:{name:1,vehicleId:1,availability:1,recurringShift:1} }).toArray(),
+        mongoDb.collection('vehicles').find({ 'Vehicle Status':'Enabled', vehicleDisabled:{$ne:true} },
+          { projection:{'Vehicle Name':1,seats:1,wheelchairAccessible:1} }).toArray()
+      ]);
+      const byId = new Map(vehicles.map(vehicle => [String(vehicle._id), vehicle]));
+      const links = new Map();
+      for (const driver of drivers) {
+        const id = String(driver.vehicleId);
+        links.set(id, (links.get(id) || 0) + 1);
+      }
+      return drivers.flatMap(driver => {
+        const vehicleId = String(driver.vehicleId);
+        const vehicle = byId.get(vehicleId);
+        if (!vehicle || links.get(vehicleId) !== 1 || ![4,7].includes(vehicle.seats) ||
+            typeof vehicle.wheelchairAccessible !== 'boolean') return [];
+        return [{id:'mongo:'+driver._id,name:driver.name,vehicleId,vehicle:vehicle['Vehicle Name'],
+          seats:vehicle.seats,capabilities:vehicle.wheelchairAccessible ? ['wheelchair'] : [],
+          availability:driver.availability,recurringShift:driver.recurringShift,rosterManaged:true}];
+      });
+    };
     ownerRecords.fleet = async () => {
       const fields = {
         driver: ['name', 'Driver Status'],
