@@ -47,6 +47,13 @@ async function start(createApp) {
     const mongoDb = mongoClient.db('royalcab_dispatch_test');
     ownerRecords = (url,res)=>renderOwnerRecords(mongoDb,url,res);
     Object.assign(ownerRecords, require('./mongo-test/trip-records.cjs').tripRecords(mongoDb));
+    ownerRecords.fleetCounts = async () => {
+      const [drivers, vehicles] = await Promise.all([
+        mongoDb.collection('drivers').countDocuments(),
+        mongoDb.collection('vehicles').countDocuments()
+      ]);
+      return {drivers, vehicles};
+    };
     ownerRecords.plannerFleet = async () => {
       const [drivers, vehicles] = await Promise.all([
         mongoDb.collection('drivers').find({ rosterVerified:true, 'Driver Status':'Enabled', driverDisabled:{$ne:true} },

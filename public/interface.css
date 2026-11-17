@@ -1958,3 +1958,15 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
 }
 .login:has(.easyride-signin-brand) #login-content .btn.primary:hover { filter:brightness(1.12); }
 .login:has(.easyride-signin-brand) .login-note { color:#506580; }
+.live-dashboard .imported-fleet-summary {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px 16px;
+  padding:8px 14px;
+  color:#182e49;
+  background:#eaf2fc;
+  border-radius:10px;
+  font-size:13px;
+}

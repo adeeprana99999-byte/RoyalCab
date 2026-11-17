@@ -513,7 +513,10 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
         const center=pilot?.stops[0];
+        const importedFleetCounts=!needsPreviewAccess && user?.role==='owner' && ownerRecords?.fleetCounts
+          ? await ownerRecords.fleetCounts().catch(()=>null) : undefined;
         return json(res,200,{mode:pilot?'pilot':'demo',localPhoneLogin:!pilot&&!hostedDemo,publicDemo,hostedPhoneLogin,driverPay:!!driverPay,needsPreviewAccess,hostedWorkspace:!!ownerRecords,mongoReplay:!!mongoReplay&&!needsPreviewAccess&&user?.role==='owner',mongoOwnerRecords:!!ownerRecords&&!needsPreviewAccess&&user?.role==='owner',sheetOnly:!!sheetFile,dispatchMode:roadRouting?'road':'demo',
+          importedFleetCounts,
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,

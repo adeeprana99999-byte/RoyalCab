@@ -1022,6 +1022,10 @@ function overview() {
   ];
   const summary = '<section class="live-metrics" aria-label="Fleet totals">'+metrics.map(([kind,label,count,symbol]) =>
     '<button type="button" class="live-metric '+kind+'" data-live-total="'+kind+'"><span class="live-metric-icon" aria-hidden="true">'+icon(symbol)+'</span><div><strong>'+count+'</strong><span>'+label+'</span>'+fleetMetricTrend(kind,count)+'</div></button>').join('')+'</section>';
+  const imported = config.importedFleetCounts;
+  const importedSummary = imported ? '<div class="imported-fleet-summary"><span><strong>Imported fleet</strong> · '+
+    imported.drivers+' driver records · '+imported.vehicles+' vehicle records</span>'+
+    '<button type="button" class="btn small" data-owner-nav="drivers">Fleet records</button></div>' : '';
   const activeBoard = '<section class="live-active-board"><h2>Active trips</h2>'+
     (activeTrips.length ? '<div class="live-active-scroll"><table><thead><tr><th>Trip</th><th>Driver</th><th>Pickup</th><th>Drop-off</th><th>Status</th></tr></thead><tbody>'+
       activeTrips.map(t=>'<tr><td><button class="btn small active-trip-link" data-detail="'+esc(t.id)+'">'+esc(t.reference)+'</button></td><td>'+
@@ -1029,7 +1033,7 @@ function overview() {
       '</tbody></table></div>' : '<p>No trips in progress.</p>')+'</section>';
   return '<div class="live-dashboard"><div class="dispatch-command fleet-theme-' + identity.theme + '"><section class="dispatch-toolbar"><div class="dispatch-title"><div><h1>Live fleet</h1>' + dispatchIndicator() + liveFleetProgress() + mongoDispatchControls() + (config.mongoOwnerRecords ? '<a class="btn small" href="/owner/records?show=lgtc_rides">View imported MongoDB records</a>' : '') +
     (location.pathname==='/owner/'&&location.port==='4781'?'<details class="missed-pickup-demo" '+($('#missed-pickup-test')?.open?'open':'')+' id="missed-pickup-test"><summary>Missed pickup test</summary><label><input type="checkbox" id="recover-with-driver"> Bring a test driver online at minute 8</label> <label><input type="checkbox" id="decline-recovery-offer"> Maya declines the first offer</label> <label><input type="checkbox" id="decline-second-recovery-offer"> Maya and James decline</label> <label><input type="checkbox" id="decline-all-recovery-offers"> All three drivers decline</label> <button class="btn small" id="start-missed-pickup">Start recovery test</button><button class="btn small" id="retry-missed-demo" hidden>Retry driver search</button> <button class="btn small" id="accept-missed-demo" hidden>Accept as Jordan</button> <button class="btn small" id="decline-missed-demo" hidden>Decline as Jordan</button><button class="btn small" id="missed-group-test">Test five eligible drivers</button><p id="missed-pickup-progress" role="status">'+esc(missedPickupProgress)+'</p></details>':'') +
-    '</div></div><button class="btn primary" id="add-planned-ride">'+icon('plus')+' New booking</button></section>' + summary +
+    '</div></div><button class="btn primary" id="add-planned-ride">'+icon('plus')+' New booking</button></section>' + summary + importedSummary +
     (mongoLiveReplay() ? '' : '<div class="dispatch-rail">' + dispatchFleetPicker() + '</div>') + '</div>' +
     (!['device','sample','test:mongo-lgtc-replay'].includes(fleetSource)?'<aside class="queue-test-notice"><p><strong>Test data</strong> · '+esc(identity.label)+' is selected.'+
       (fleetSource==='queue-review'?' Starts with 50 Now, 50 Later and 50 Attention.':'')+'</p>'+
