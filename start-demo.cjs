@@ -108,6 +108,17 @@ async function start(createApp) {
   }
   const app=createApp({dbPath,hostedDemoPassword:password,hostedDemoInvite:invite,publicDemo,sheetFile,ownerRecords,mongoReplay,hostedAccounts});
   if (mongoClient) app.server.once('close',()=>void mongoClient.close());
+  if (ownerRecords?.plannerFleet) {
+    try {
+      const roster = await ownerRecords.plannerFleet();
+      if (roster.length) app.mutate(state => {
+        state.drivers.push(...roster.map(driver => ({...driver,status:'offline',locationSource:'device',trackingEnabled:false})));
+      });
+      console.log('EASYRIDE linked '+roster.length+' verified imported driver–vehicle pairs to Live Fleet.');
+    } catch {
+      console.warn('EASYRIDE could not load the imported live roster from MongoDB.');
+    }
+  }
   const port=Number(process.env.PORT||4720);
   await new Promise((resolve,reject)=>{
     app.server.once('error',reject);

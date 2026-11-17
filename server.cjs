@@ -42,7 +42,10 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       if (typeof phone!=='string' || !/^\+[1-9]\d{7,14}$/.test(phone)) throw Error('EASYRIDE '+role+' phone must start with + and contain only digits after it.');
       if (typeof password!=='string' || password.length<12 || password.length>128) throw Error('EASYRIDE '+role+' password must be 12–128 characters.');
       if (accounts.has(phone)) throw Error('EASYRIDE '+role+' phone duplicates another account. Use a unique phone number.');
-      if (role==='driver' && !['d1','d2','d3'].includes(driverId)) throw Error('EASYRIDE driverId must be d1, d2, or d3.');
+      if (role==='driver' && !['d1','d2','d3'].includes(driverId) &&
+          (typeof driverId!=='string' || !/^mongo:[^\u0000-\u001f]{1,160}$/.test(driverId))) {
+        throw Error('EASYRIDE driverId must be a demo driver ID or a verified MongoDB roster ID.');
+      }
       const salt=crypto.randomBytes(16);
       accounts.set(phone,{role,phone,driverId,name,salt,digest:crypto.scryptSync(password,salt,32)});
     }
@@ -177,7 +180,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
   const lgtcPreferenceRows=db.prepare('SELECT customer_key,driver_id FROM lgtc_preferences');
   function lgtcData(imported = []) {
     const state = load();
-    const roster = state.drivers.filter(d => !d.demoRunId && d.locationSource !== 'replay' && (!pilot || pilot.hasDriver(d.id))).concat(imported);
+    const importedIds = new Set(imported.map(driver => driver.id));
+    const roster = state.drivers.filter(d => !importedIds.has(d.id) && !d.demoRunId &&
+      d.locationSource !== 'replay' && (!pilot || pilot.hasDriver(d.id))).concat(imported);
     const drivers = new Map(roster.map(d => [d.id, {id:d.id,name:d.name}]));
     const preferences = new Map();
     for (const [key, preference] of Object.entries(state.customerPreferences)) {
@@ -520,7 +525,9 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
           map:{city:pilot?'Verified service area':'Charlotte, NC',center:center?[center.lat,center.lng]:[35.2271,-80.8431],
             zoom:13,googleKey:!needsPreviewAccess&&(!pilot||user)?mapKey||undefined:undefined},
           places:pilot?(user?pilot.stops:[]):D.places,declineReasons:D.declineReasons,releaseReasons:D.releaseReasons,
-          drivers:pilot?[]:load().drivers.map(d=>({id:d.id,name:d.name,vehicle:d.vehicle})),
+          drivers:pilot?[]:load().drivers.filter(d=>!d.id.startsWith('mongo:') ||
+            !needsPreviewAccess && (user?.role==='owner' || user?.driverId===d.id))
+            .map(d=>({id:d.id,name:d.name,vehicle:d.vehicle})),
           providers:{maps:mapKey?'Google Maps':'OpenStreetMap',routing:roadRouting?'Google Routes road ETA pilot':'Simulated travel time',
             gps:'Foreground phone GPS',sms:pilot?'Delivery not configured':'Demo verification',storage:'SQLite (local)'}});
       }
