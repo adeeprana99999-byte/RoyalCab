@@ -1467,11 +1467,7 @@ function previewImport() {
   return `<section class="panel"><div class="panel-heading"><div><h2>Review your import</h2><p>${batch.rows.length} rows · ${invalid} with errors. ${batch.confirmed ? 'Already imported.' : 'All rows must be valid. Automatic dispatch uses your configured pickup window.'}</p></div><button class="btn primary" id="confirm-import" ${invalid || batch.confirmed ? 'disabled' : ''}>${icon('check')} ${batch.confirmed ? 'Imported' : 'Confirm import'}</button></div><div class="table-scroll"><table><thead><tr><th>Row</th><th>Trip</th><th>Customer</th><th>Pickup</th><th>Validation</th></tr></thead><tbody>${batch.rows.map(r => `<tr><td>${r.row}</td><td>${esc(r.trip_id)}</td><td>${esc(r.customer_name)}</td><td>${esc(r.pickup)}<small>${esc(r.pickup_at)}</small></td><td>${r.errors.length ? `<span class="validation-error">${r.errors.map(esc).join('<br>')}</span>` : badge('valid')}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 function fleetPage() { return heading('LIVE OPERATIONS', 'Stay close to your fleet.', 'Location freshness and driver status, updated over a live connection.') + `<div class="overview-grid fleet-large"><section class="panel">${mapView()}</section><section class="panel"><div class="panel-heading"><h2>Working drivers</h2></div><div class="driver-list">${driverRows()}</div></section></div><div class="notice">${icon('map')} This is a schematic with simulated GPS. Real Google maps and phone GPS are separate production integrations.</div>`; }
-function mongoRecordsFrame(collection,title) {
-  return '<iframe title="'+title+'" src="/owner/records?show='+collection+'" style="display:block;width:100%;height:75vh;border:0"></iframe>';
-}
 function importedFleetPanel() {
-  if (config.mongoOwnerRecords) return mongoRecordsFrame('vehicles','MongoDB fleet records');
   return '<section class="panel upload-panel" id="imported-fleet"><h2>Fleet records</h2><div class="card-actions"><button class="btn" data-add-fleet="vehicle">Add vehicle</button><button class="btn" data-add-fleet="driver">Add driver</button></div><details class="fleet-setup-disclosure"><summary>Fleet setup</summary><p>Save a vehicle and weekly Eastern shift for an existing driver account. Date-specific shifts take priority.</p><form id="fleet-setup"><label>Driver account<select name="account" required></select></label><label>Imported driver<select name="importedDriver" required></select></label><label>Vehicle<select name="vin" required></select></label><label>Passenger seats<input name="seats" type="number" min="1" max="7" required></label><label>Wheelchair accessibility<select name="accessible" required><option value="">Choose…</option><option value="no">Standard</option><option value="yes">Wheelchair accessible</option></select></label><fieldset><legend>Weekly workdays</legend>'+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((label,index)=>'<label><input type="checkbox" name="day" value="'+index+'"> '+label+'</label>').join('')+'</fieldset><label>Shift starts (ET)<input name="start" type="time" required></label><label>Shift ends (ET)<input name="end" type="time" required></label><button class="btn primary">Save fleet setup</button><p class="fleet-setup-result" aria-live="polite"></p></form></details><div class="bookings-filters"><label>Record type<select name="kind"><option value="vehicle">Vehicles</option><option value="driver">Drivers</option></select></label><label>Search records<input type="search" name="query"></label><label>Vehicle status<select name="status"><option value="">All statuses</option></select></label></div><p role="status"></p><div class="table-scroll"></div></section>';
 }
 function bindImportedFleet() {
@@ -1524,6 +1520,7 @@ function bindImportedFleet() {
     if (mongoRecords) {
       kind.options[0].textContent = 'Vehicles ('+vehicles.length+')';
       kind.options[1].textContent = 'Drivers ('+drivers.length+')';
+      status.closest('label').firstChild.textContent = 'Record status';
     }
     const setup = panel.querySelector('#fleet-setup');
     const fields = setup.elements;
@@ -1633,11 +1630,12 @@ function bindImportedFleet() {
     table.after(pager);
     function show() {
       const isVehicle = kind.value==='vehicle';
-      status.disabled = !isVehicle;
+      const statusKey = isVehicle ? 'Vehicle Status' : 'Driver Status';
+      status.disabled = !isVehicle && !mongoRecords;
       const source = isVehicle ? vehicles : drivers;
       const columns = isVehicle ? ['Vehicle Name','Year','Make','Model','Vehicle Status','Last Known Driver'] : ['name','Driver Status'];
       const needle = query.value.trim().toLowerCase();
-      const matching = source.filter(row=>(!isVehicle || !status.value || row['Vehicle Status']===status.value) &&
+      const matching = source.filter(row=>(status.disabled || !status.value || row[statusKey]===status.value) &&
         columns.some(key=>String(row[key] ?? '').toLowerCase().includes(needle)));
       const pageSize = Number(limit.value);
       const pages = Math.max(1, Math.ceil(matching.length/pageSize));
@@ -1649,7 +1647,15 @@ function bindImportedFleet() {
         '<span>Page '+recordPage+' of '+pages+'</span><button class="btn small" data-record-step="1" '+
         (recordPage===pages?'disabled':'')+'>Next</button>';
       table.innerHTML = '<table><thead><tr>'+columns.map(key=>'<th scope="col">'+esc(key==='name'?'Driver name':key)+'</th>').join('')+
-        '</tr></thead><tbody>'+matching.slice(start,end).map((row,index)=>'<tr>'+columns.map((key,column)=>'<td>'+(column===0&&!mongoRecords?'<button class="text-btn" data-fleet-record="'+(start+index)+'">'+(isVehicle?'<span class="fleet-vehicle-thumb" aria-hidden="true">'+icon('car')+'</span>':'')+esc(row[key]||'View record')+'</button>':esc(row[key] || '—'))+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+        '</tr></thead><tbody>'+matching.slice(start,end).map((row,index)=>'<tr>'+columns.map((key,column)=>{
+          const value = row[key];
+          if (mongoRecords && key===statusKey && ['Enabled','Disabled'].includes(value)) {
+            return '<td><span class="badge '+value.toLowerCase()+'">'+value+'</span></td>';
+          }
+          if (column===0 && !mongoRecords) return '<td><button class="text-btn" data-fleet-record="'+(start+index)+'">'+
+            (isVehicle?'<span class="fleet-vehicle-thumb" aria-hidden="true">'+icon('car')+'</span>':'')+esc(value||'View record')+'</button></td>';
+          return '<td>'+esc(value || '—')+'</td>';
+        }).join('')+'</tr>').join('')+'</tbody></table>';
       if (isVehicle) table.querySelectorAll('[data-fleet-record]').forEach(button=>{
         const row = matching[Number(button.dataset.fleetRecord)];
         renderVehiclePhoto(button,row.recordKey ?? row['Vehicle Identification Number (VIN)']?.toUpperCase());
