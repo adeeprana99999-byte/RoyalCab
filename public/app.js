@@ -1219,6 +1219,12 @@ let mongoTrips, mongoTripRequest, mongoTripQuery='', mongoTripFilter='all', mong
 let mongoTripPageSize=500;
 const expandedMongoTrips=new Set();
 function mongoTripsEnabled() { return !!config.mongoOwnerRecords || mongoOwnerFleet && user?.role==='owner'; }
+const mongoSheetColumns = ["Driver","Trip Id","Status","Rider's Name","Level Of Service","PU - Schedule Time","DO - Schedule Time","PU - Full Street","PU - City","DO - Full Street","DO - City","Escorts","PU - Actual Time","DO - Actual Time","Miles","Age","Trip Source","Cancellation Reason Code","Rejection Reason Code","PU Ship To","DO Ship To"];
+let mongoSelectedColumns = ["Trip Id","Status","Rider's Name","PU - Schedule Time","PU - Full Street","DO - Schedule Time","DO - Full Street","Miles"];
+try {
+  const saved=JSON.parse(localStorage.getItem('easyride-trip-columns'));
+  if(Array.isArray(saved) && saved.length && saved.every(name=>mongoSheetColumns.includes(name))) mongoSelectedColumns=[...new Set(saved)];
+} catch {}
 function mongoTripsPage() {
   return '<section class="bookings-panel" id="mongo-trips">'+
     '<input class="mongo-trip-search" type="search" id="mongo-trip-search" aria-label="Search trips" value="'+esc(mongoTripQuery)+'" placeholder="Search by ride ID or city">'+
@@ -1228,6 +1234,9 @@ function mongoTripsPage() {
     '<label>Review status<select id="mongo-trip-filter"><option value="all">All rides</option>'+
     '<option value="review">Owner review</option><option value="ready">Assigned in replay plan</option>'+
     '<option value="missing">Pickup time missing</option></select></label></details>'+
+    '<details class="mongo-column-picker"><summary>Columns</summary><div aria-label="Trip columns">'+mongoSheetColumns.map(name=>
+      '<label><input type="checkbox" data-trip-column="'+esc(name)+'" '+(mongoSelectedColumns.includes(name)?'checked':'')+
+      '>'+esc(name)+'</label>').join('')+'</div></details>'+
     '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button>'+
     '<button type="button" class="btn primary small" id="export-mongo-trips" disabled>Export CSV</button></div>'+
     '<p id="mongo-trips-status" role="status">Loading MongoDB rides…</p><div id="mongo-trips-results"></div></section>';
@@ -1314,21 +1323,21 @@ function bindMongoTrips() {
     const start=(mongoTripPage-1)*perPage;
     status.textContent=matches.length ? (start+1)+'–'+Math.min(start+perPage,matches.length)+' of '+matches.length+
       ' trips · '+mongoTrips.rides.length+' imported legs' : 'No matching trips · '+mongoTrips.rides.length+' imported legs';
-    const columns=['Trip ID','Service date','Pickup → destination','Pickup date','Pickup time (ET)',
-      'Pickup address','Drop-off','Status','Passenger name','ETA','Miles'];
+    const columns=['Trip ID',...mongoSelectedColumns.filter(name=>name!=='Trip Id')];
     const address=value=>Array.isArray(value)?value.filter(Boolean).join(', '):value;
     const cells=(ride,status,review)=>{
-      const pickupAddress=address(ride.pickupAddress)||ride.from||'—';
-      const destinationAddress=address(ride.dropoffAddress)||ride.to||'—';
-      const values=[ride.date,'',ride.date,ride.pickup,
-        address(ride.pickupAddress)||ride.from,
-        [address(ride.dropoffAddress)||ride.to,ride.dropoff&&ride.dropoff+' ET'].filter(Boolean).join(' · '),
-        '',ride.passenger,null,ride.miles??null];
-      return values.map((value,index)=>'<td data-label="'+columns[index+1]+'"'+
-        '>'+(index===1?'<div class="mongo-trip-route"><span><strong>Pickup</strong> '+esc(pickupAddress)+
-          '</span><span><strong>Destination</strong> '+esc(destinationAddress)+'</span></div>':
-          index===7?status:esc(value??'—'))+
-        (index===7 && review?'<small class="mongo-trip-review">'+esc(review)+'</small>':'')+'</td>').join('');
+      const linked=state?.trips.find(trip=>trip.reference===ride.reference);
+      const driver=state?.drivers.find(driver=>driver.id===linked?.driverId);
+      const values={
+        Driver:driver?.name,Status:status,"Rider's Name":ride.passenger,
+        "Level Of Service":ride.serviceCode,"PU - Schedule Time":ride.pickup,
+        "DO - Schedule Time":ride.dropoff,"PU - Full Street":address(ride.pickupAddress),
+        "PU - City":ride.from,"DO - Full Street":address(ride.dropoffAddress),"DO - City":ride.to,
+        Miles:ride.miles,"Trip Source":ride.program
+      };
+      return columns.slice(1).map(name=>'<td data-label="'+esc(name)+'">'+
+        (name==='Status'?status+(review?'<small class="mongo-trip-review">'+esc(review)+'</small>':''):
+          esc(values[name]??'—'))+'</td>').join('');
     };
     const legRow=(ride,child=false)=>{
       const review=reviewFor(ride);
@@ -1367,6 +1376,13 @@ function bindMongoTrips() {
   };
   search.oninput=()=>{mongoTripQuery=search.value;mongoTripPage=1;show();};
   filter.onchange=()=>{mongoTripFilter=filter.value;mongoTripPage=1;show();};
+  panel.querySelectorAll('[data-trip-column]').forEach(input=>input.onchange=()=>{
+    const chosen=[...panel.querySelectorAll('[data-trip-column]:checked')].map(item=>item.dataset.tripColumn);
+    if(!chosen.length){input.checked=true;return;}
+    mongoSelectedColumns=chosen;
+    try {localStorage.setItem('easyride-trip-columns',JSON.stringify(chosen));} catch {}
+    show();
+  });
   $('#mongo-trip-page-size').onchange=event=>{mongoTripPageSize=Number(event.target.value);mongoTripPage=1;show();};
   results.onclick=event=>{
     const button=event.target.closest('[data-mongo-trip-step]');

@@ -26,6 +26,7 @@ function tripRecords(db) {
         return {id:String(row._id),reference:row.reference,date:row.service_date,row:row.source_row,
           group:group || row.reference,leg:leg?.toUpperCase(),program:String(fields[0] ?? '').trim(),
           pickup:importedTime(fields[14]),dropoff:importedTime(fields[23]),status:row.status,
+          serviceCode:String(fields[3] ?? '').trim(),
           passenger:row.details?.name,pickupAddress:row.details?.pickupAddress,
           dropoffAddress:row.details?.destinationAddress,miles:importedMiles(fields[33]),
           from:String(fields[10] ?? '').trim(),to:String(fields[19] ?? '').trim()};

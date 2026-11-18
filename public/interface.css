@@ -1970,3 +1970,13 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
   border-radius:10px;
   font-size:13px;
 }
+
+.mongo-column-picker { position:relative; margin-inline-start:auto; color:#172c48; }
+.mongo-column-picker summary { cursor:pointer; padding:10px 14px; background:#fff; border:1px solid #cbd8e7; border-radius:9px; }
+.mongo-column-picker > div {
+  position:absolute; z-index:10; inset-inline-end:0; top:100%; width:min(320px,80vw);
+  max-height:55vh; overflow:auto; padding:12px; background:#fff;
+  border:1px solid #cbd8e7; border-radius:12px; box-shadow:0 8px 24px #10213b30;
+}
+#mongo-trips .mongo-column-picker label { display:flex; gap:8px; padding:7px; font-size:13px; }
+#mongo-trips .mongo-column-picker input { min-height:0; width:16px; height:16px; margin:0; }
