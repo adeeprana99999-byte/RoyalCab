@@ -2106,3 +2106,139 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
   .login.easyride-login-3d #login-content { padding-top:12px; }
   .login.easyride-login-3d .login-note { margin-top:18px; padding-top:14px; }
 }
+/* Reference-matched EASYRIDE sign-in. All selectors stay outside signed-in UI. */
+.easyride-reference { position:relative; isolation:isolate; width:100%; min-height:max(100svh,56.28vw); overflow:hidden; color:#fff; background:#051b49 url('/login-night-city.png') center center / 100% 100% no-repeat; font-family:'Segoe UI',Arial,sans-serif; }
+.easyride-reference *, .easyride-reference *::before, .easyride-reference *::after { box-sizing:border-box; }
+.easyride-reference .sr-only { position:absolute!important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.easyride-reference .reference-logo { position:absolute; left:3.6%; top:1.9%; width:24%; z-index:3; display:block; }
+.easyride-reference .reference-logo svg { display:block; width:100%; height:auto; }
+.easyride-reference .reference-nav { display:flex; align-items:center; gap:clamp(12px,1.7vw,30px); position:absolute; right:2.5%; top:3.1%; z-index:5; color:white; font-size:clamp(13px,1.15vw,21px); }
+.easyride-reference .reference-nav a,.easyride-reference .reference-nav button { display:inline-flex; align-items:center; gap:8px; padding:0; color:#fff; font:inherit; font-weight:500; border:0; background:none; border-radius:0; box-shadow:none; text-decoration:none; }
+.easyride-reference .reference-nav .icon { width:1.4em; height:1.4em; }
+.easyride-reference .reference-nav .reference-download { padding:9px 18px; border:2px solid #ffbd00; border-radius:40px; color:#ffbd00; font-weight:650; margin-left:1.2vw; }
+.easyride-reference .reference-download > span { font-size:1.6em; line-height:.8; }
+.easyride-reference .reference-main { display:block; min-height:inherit; padding:0; }
+.easyride-reference .reference-hero { position:absolute; inset:0; pointer-events:none; }
+.easyride-reference .reference-headline { position:absolute; left:11.06%; top:24.97%; width:30.2%; height:auto; }
+.easyride-reference .reference-card { position:absolute; top:17.4%; right:3.2%; width:35%; padding:clamp(34px,4.2vw,72px) clamp(22px,3.3vw,55px) clamp(22px,2vw,34px); border:1.5px solid #a6c6ff; border-radius:clamp(20px,2.1vw,36px); background:linear-gradient(145deg,#497bd880 0%,#142a598f 45%,#17214ba3 75%,#b6a3d080 100%); backdrop-filter:blur(16px); box-shadow:0 0 3px #c3e0ff,inset 0 0 28px #8aafff30,0 20px 45px #01091b88,0 5px 8px -3px #00c8ff; color:white; }
+.easyride-reference .reference-card::after { content:''; pointer-events:none; position:absolute; inset:0; border-radius:inherit; box-shadow:inset 0 2px 2px #e6efffa8,inset 0 -2px 3px #61d9ff; }
+.easyride-reference .reference-car-icon { position:absolute; top:0; left:50%; transform:translate(-50%,-46%); width:clamp(70px,6.8vw,114px); aspect-ratio:1; border-radius:50%; display:grid; place-items:center; border:3px solid #a2f4ff; color:white; background:radial-gradient(circle at 45% 35%,#164f9d,#001a64 66%); box-shadow:0 0 5px 2px #24dcff,inset 0 0 12px #0095ff,0 0 24px #007bff; }
+.easyride-reference .reference-car-icon .icon { width:62%; height:62%; stroke-width:2.5; }
+.easyride-reference .reference-card h2 { font-size:clamp(27px,2.7vw,46px); line-height:1.16; text-align:center; color:#fff; font-weight:750; letter-spacing:-.8px; margin:0 0 5px; }
+.easyride-reference .reference-subtitle { margin:0 0 clamp(20px,1.8vw,32px); font-size:clamp(14px,1.35vw,24px); color:#e0e7ff; text-align:center; line-height:1.4; white-space:nowrap; }
+.easyride-reference .reference-workspace { position:absolute; right:19px; top:15px; display:flex; align-items:center; gap:4px; font-size:10px; color:#d9e7ff; margin:0; }
+.easyride-reference .reference-workspace select { width:76px; min-height:24px; margin:0; padding:2px 4px; border:1px solid #ffffff44; border-radius:6px; background:#0d255899; color:#fff; font-size:11px; }
+.easyride-reference .reference-workspace select option { color:#fff; background:#102856; }
+.easyride-reference #login-content { background:transparent; border:0; padding:0; margin:0; box-shadow:none; }
+.easyride-reference #demo-phone-login { margin:0; }
+.easyride-reference #login-content .reference-input { display:flex; align-items:center; gap:clamp(10px,1.1vw,18px); height:clamp(48px,3.85vw,65px); width:100%; margin:0 0 clamp(15px,1.4vw,24px); padding:0 clamp(14px,1.4vw,24px); border:1.5px solid #adbfdf9c; border-radius:clamp(17px,1.5vw,26px); background:linear-gradient(110deg,#0a26565c,#151b3b66); box-shadow:inset 0 1px 3px #0002,0 0 1px #e0eeff; }
+.easyride-reference .reference-input > svg { width:clamp(20px,1.65vw,29px); height:clamp(24px,1.85vw,32px); color:#f5f8ff; flex-shrink:0; }
+.easyride-reference #login-content .reference-input input { display:block; width:100%; min-width:0; height:100%; min-height:0; margin:0; padding:0; border:0; outline:0; box-shadow:none; background:transparent; border-radius:0; color:white; font-size:clamp(16px,1.35vw,24px); }
+.easyride-reference #login-content .reference-input input::placeholder { color:#c0cceb; opacity:1; }
+.easyride-reference .reference-input:focus-within { outline:2px solid #ffcd4b; outline-offset:3px; }
+.easyride-reference #password-visibility { display:grid; place-items:center; flex-shrink:0; width:25px; min-height:32px; padding:0; border:0; box-shadow:none; background:transparent; color:#fff; }
+.easyride-reference #password-visibility svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:1.8; }
+.easyride-reference .reference-options { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:clamp(2px,.3vw,6px) 0 clamp(18px,1.7vw,30px); font-size:clamp(12px,1.05vw,19px); }
+.easyride-reference .reference-options label { display:flex; gap:8px; align-items:center; color:#f2f5ff; font:inherit; margin:0; white-space:nowrap; }
+.easyride-reference .reference-options input[type=checkbox] { width:clamp(18px,1.5vw,26px); height:clamp(18px,1.5vw,26px); padding:0; margin:0; accent-color:#008fff; }
+.easyride-reference .reference-options button,.easyride-reference .reference-signup button { color:#ffcc00; padding:0; background:none; border:0; font:inherit; box-shadow:none; font-weight:600; white-space:nowrap; }
+.easyride-reference #login-content .reference-signin { display:flex; align-items:center; justify-content:center; gap:12px; height:clamp(50px,3.8vw,65px); width:100%; padding:10px; margin:0; border:0; border-radius:40px; background:linear-gradient(110deg,#ffdc00 0%,#ffbc00 35%,#ff4d00 100%); box-shadow:0 8px 24px #ff9a002e,inset 0 1px 1px #ffeb8b88; color:#090600; font-size:clamp(18px,1.45vw,25px); font-weight:750; }
+.easyride-reference .reference-signin > span { display:grid; place-items:center; width:1.55em; height:1.55em; background:#090900; color:#fff; border-radius:50%; }
+.easyride-reference .reference-signin .icon { width:75%; height:75%; }
+.easyride-reference #login-content .reference-signin:hover { filter:brightness(1.1); transform:translateY(-2px); }
+.easyride-reference .reference-divider { display:flex; align-items:center; gap:15px; margin:clamp(15px,1.3vw,24px) 0; color:#eef1ff; }
+.easyride-reference .reference-divider span { height:1px; flex:1; background:#c2cdeb8a; }
+.easyride-reference .reference-divider b { display:grid; place-items:center; width:28px; height:28px; background:#c2c3ec33; border-radius:50%; font-size:clamp(15px,1.1vw,20px); font-weight:600; }
+.easyride-reference .reference-social { display:grid; grid-template-columns:1fr 1fr; gap:clamp(10px,1vw,18px); }
+.easyride-reference .reference-social button { display:flex; align-items:center; justify-content:center; gap:clamp(8px,.8vw,14px); height:clamp(42px,3.4vw,58px); padding:8px 6px; margin:0; border:1.5px solid #c5d2f3c2; border-radius:32px; color:#fff; background:#111a4080; font-size:clamp(10px,.82vw,15px); font-weight:650; white-space:nowrap; box-shadow:inset 0 1px 1px #ffffff12; }
+.easyride-reference .reference-social button:hover { background:#254b868c; }
+.easyride-reference .google-letter { font-family:Arial,sans-serif; font-weight:800; font-size:clamp(24px,2vw,36px); background:conic-gradient(#4285f4 0deg 90deg,#34a853 90deg 175deg,#fbbc05 175deg 220deg,#ea4335 220deg 290deg,#4285f4 290deg); color:transparent; background-clip:text; }
+.easyride-reference .reference-social svg { width:clamp(21px,1.7vw,30px); height:clamp(24px,2vw,34px); }
+.easyride-reference .reference-signup { margin:clamp(17px,1.5vw,27px) 0 0; text-align:center; color:#fff; font-size:clamp(13px,1.1vw,20px); line-height:1.5; }
+.easyride-reference .reference-signup button { margin-left:4px; }
+.easyride-reference .reference-demo { margin:12px 0 -8px; font-size:10px; color:#e0e8fc; text-align:center; }
+.easyride-reference .reference-demo summary { cursor:pointer; }
+.easyride-reference .reference-demo p { font-size:11px; color:#fff; margin:8px 0 0; }
+.easyride-reference .reference-footer { position:absolute; bottom:5%; left:3.3%; display:flex; align-items:center; gap:2.3vw; width:54%; color:white; }
+.easyride-reference .reference-footer div { display:flex; align-items:center; gap:1.1vw; font-size:clamp(13px,1.15vw,21px); font-weight:500; white-space:nowrap; }
+.easyride-reference .reference-footer .icon,.easyride-reference .reference-footer svg { width:clamp(28px,2.6vw,45px); height:clamp(34px,3vw,52px); color:#ffd22e; flex-shrink:0; stroke:currentColor; fill:none; stroke-width:2.5; }
+.easyride-reference .reference-footer .icon { fill:#ffd22e; stroke-width:1; }
+.easyride-reference .reference-footer i { height:clamp(32px,2.9vw,50px); width:1px; background:#e9edffb3; }
+.easyride-reference button:focus-visible,.easyride-reference a:focus-visible,.easyride-reference select:focus-visible { outline:3px solid #ffcc45; outline-offset:4px; }
+.easyride-reference .reference-workspace-password { color:#fff; }
+.easyride-reference .reference-workspace-password input { width:100%; padding:12px; background:#112c57; color:#fff; border:1px solid #abc6ff; border-radius:14px; }
+@media(min-width:1001px) and (max-aspect-ratio:3/2) { .easyride-reference { min-height:max(100svh,65vw); } .easyride-reference .reference-card { top:20%; } }
+@media(max-width:1000px) {
+  .easyride-reference { min-height:100svh; padding-bottom:30px; background-size:auto 690px; background-position:28% 0; background-color:#071b43; }
+  .easyride-reference::before { content:''; position:absolute; inset:0; z-index:-1; background:linear-gradient(transparent 440px,#071b43 690px); }
+  .easyride-reference .reference-logo { width:230px; left:20px; top:14px; }
+  .easyride-reference .reference-nav { top:24px; right:20px; gap:15px; font-size:13px; }
+  .easyride-reference .reference-nav > a,.easyride-reference .reference-nav > span,.easyride-reference .reference-nav > button:not(.reference-download) { display:none; }
+  .easyride-reference .reference-nav .reference-download { padding:8px 13px; font-size:12px; }
+  .easyride-reference .reference-main { min-height:0; padding:450px 20px 0; }
+  .easyride-reference .reference-headline { top:155px; left:9%; width:320px; }
+  .easyride-reference .reference-card { position:relative; top:auto; right:auto; width:min(100%,510px); margin:50px auto 0; padding:66px 32px 28px; border-radius:28px; }
+  .easyride-reference .reference-card h2 { font-size:34px; }
+  .easyride-reference .reference-subtitle { font-size:17px; margin-bottom:26px; }
+  .easyride-reference .reference-car-icon { width:88px; }
+  .easyride-reference #login-content .reference-input { height:57px; margin-bottom:20px; padding:0 18px; border-radius:21px; gap:14px; }
+  .easyride-reference #login-content .reference-input input { font-size:18px; }
+  .easyride-reference .reference-input > svg { width:24px; height:28px; }
+  .easyride-reference .reference-options { font-size:14px; margin:4px 0 24px; }
+  .easyride-reference #login-content .reference-signin { height:56px; font-size:21px; }
+  .easyride-reference .reference-social button { font-size:12px; height:48px; }
+  .easyride-reference .reference-signup { font-size:15px; margin-top:23px; }
+  .easyride-reference .reference-divider { margin:20px 0; }
+  .easyride-reference .reference-footer { position:relative; left:auto; bottom:auto; width:auto; justify-content:center; gap:20px; margin-top:35px; padding:0 20px; }
+  .easyride-reference .reference-footer div { gap:8px; font-size:13px; }
+  .easyride-reference .reference-footer svg,.easyride-reference .reference-footer .icon { width:26px; height:30px; }
+}
+@media(max-width:500px) {
+  .easyride-reference { background-size:auto 500px; background-position:24% 0; }
+  .easyride-reference::before { background:linear-gradient(transparent 360px,#071b43 500px); }
+  .easyride-reference .reference-logo { width:176px; left:10px; top:10px; }
+  .easyride-reference .reference-nav { top:18px; right:12px; }
+  .easyride-reference .reference-nav .reference-download { font-size:10px; padding:7px 9px; }
+  .easyride-reference .reference-headline { top:114px; left:9%; width:270px; }
+  .easyride-reference .reference-main { padding:365px 16px 0; }
+  .easyride-reference .reference-card { margin-top:38px; padding:61px 22px 25px; }
+  .easyride-reference .reference-card h2 { font-size:30px; }
+  .easyride-reference .reference-subtitle { font-size:15px; }
+  .easyride-reference .reference-workspace { top:12px; right:13px; font-size:9px; }
+  .easyride-reference .reference-workspace select { width:69px; font-size:10px; }
+  .easyride-reference .reference-options { font-size:12px; }
+  .easyride-reference .reference-options label { gap:5px; }
+  .easyride-reference .reference-social { gap:8px; }
+  .easyride-reference .reference-social button { font-size:10px; gap:6px; }
+  .easyride-reference .reference-signup { font-size:13px; }
+  .easyride-reference .reference-footer { flex-wrap:wrap; gap:12px; }
+  .easyride-reference .reference-footer div { font-size:11px; gap:5px; }
+  .easyride-reference .reference-footer i { display:none; }
+  .easyride-reference .reference-footer svg,.easyride-reference .reference-footer .icon { width:22px; height:26px; }
+}
+@media(prefers-reduced-motion:reduce) { .easyride-reference * { transition:none!important; scroll-behavior:auto!important; } }
+.easyride-reference .reference-options button { min-height:0; line-height:1.3; border-radius:0; }
+.easyride-reference .reference-options label { min-height:0; line-height:1.3; }
+.easyride-reference .reference-options { line-height:1.3; }
+.easyride-reference .reference-footer { padding:0; justify-content:flex-start; }
+.easyride-reference .reference-footer div { flex:none; }
+.easyride-reference .reference-footer span { font:inherit; color:inherit; }
+.easyride-reference .reference-headline { mask-image:linear-gradient(to bottom,transparent,#000 9%,#000 88%,transparent); }
+.easyride-reference .reference-demo { position:absolute; bottom:-25px; left:0; right:0; margin:0; }
+.easyride-reference .reference-card { padding-bottom:clamp(19px,1.65vw,28px); }
+.easyride-reference .reference-car-icon svg { width:100%; height:100%; }
+@media(max-width:1000px) { .easyride-reference .reference-card { padding-bottom:26px; } .easyride-reference .reference-footer { justify-content:center; padding:0 20px; } }
+.easyride-reference .reference-options input[type=checkbox] { min-height:0; min-width:0; }
+.easyride-reference .reference-car-icon { border:0; background:none; box-shadow:none; width:clamp(76px,7.7vw,129px); }
+@media(min-width:1001px) {
+  .easyride-reference .reference-subtitle { margin-bottom:calc(1.8vw - 4px); }
+  .easyride-reference .reference-options { margin-bottom:calc(1.7vw - 3px); }
+  .easyride-reference .reference-signup { margin-top:calc(1.5vw - 5px); }
+  .easyride-reference .reference-card { padding-bottom:calc(1.65vw - 4px); }
+}
+.easyride-reference .reference-filter-defs { position:absolute; pointer-events:none; }
+.easyride-reference .reference-logo image,.easyride-reference .reference-headline image,.easyride-reference .reference-car-icon image { filter:url(#reference-ink-only); }
+.easyride-reference .reference-logo svg,.easyride-reference .reference-headline,.easyride-reference .reference-car-icon svg { overflow:visible; }
+.easyride-reference #login-content .reference-signin:hover { transform:none; }
+.easyride-reference #login-content .reference-signin:active { transform:none; filter:brightness(.98); }
+.easyride-reference .reference-logo svg,.easyride-reference .reference-headline,.easyride-reference .reference-car-icon svg { overflow:hidden; }

@@ -408,7 +408,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     '/api/lgtc/customer', '/api/driver/tracking', '/api/driver/location',
   ]);
   const previewLoginAssets = new Set(['/', '/api/config', '/api/session', '/app.js', '/board.js',
-    '/styles.css', '/interface.css', '/favicon.svg', '/easyride-brand.png', '/leaflet.js', '/leaflet.css', '/map-camera.js',
+    '/styles.css', '/interface.css', '/login-night-city.png', '/login-reference-art.png', '/favicon.svg', '/easyride-brand.png', '/leaflet.js', '/leaflet.css', '/map-camera.js',
     '/rider-view.js', '/ride-explanation.js', '/lgtc-view.js', '/google-fleet-map.js']);
   const server = http.createServer(async (req, res) => {
     let needsPreviewAccess=false;
@@ -1479,7 +1479,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         publish(); return json(res, 200, result);
       }
       if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Endpoint not found' });
-      const assets = { '/google-fleet-map.js':['google-fleet-map.js','text/javascript'], '/lgtc-view.js':['lgtc-view.js','text/javascript'], '/ride-explanation.js':['ride-explanation.js','text/javascript'], '/leaflet.js':['leaflet.js','text/javascript'], '/leaflet.css':['leaflet.css','text/css'], '/rider-view.js':['rider-view.js','text/javascript'], '/interface.css':['interface.css','text/css'], '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/board.js': ['board.js', 'text/javascript'], '/map-camera.js': ['map-camera.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'], '/easyride-brand.png': ['easyride-brand.png', 'image/png'] };
+      const assets = { '/login-night-city.png':['login-night-city.png','image/png'], '/login-reference-art.png':['login-reference-art.png','image/png'], '/google-fleet-map.js':['google-fleet-map.js','text/javascript'], '/lgtc-view.js':['lgtc-view.js','text/javascript'], '/ride-explanation.js':['ride-explanation.js','text/javascript'], '/leaflet.js':['leaflet.js','text/javascript'], '/leaflet.css':['leaflet.css','text/css'], '/rider-view.js':['rider-view.js','text/javascript'], '/interface.css':['interface.css','text/css'], '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/board.js': ['board.js', 'text/javascript'], '/map-camera.js': ['map-camera.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'], '/easyride-brand.png': ['easyride-brand.png', 'image/png'] };
       const asset = assets[url.pathname]; if (!asset || req.method !== 'GET') return json(res, 404, { error: 'Not found' });
       res.writeHead(200, { 'Content-Type': asset[1] + '; charset=utf-8', 'Cache-Control': 'no-cache' });
       const contents = fs.readFileSync(path.join(__dirname, 'public', asset[0]));
