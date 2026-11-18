@@ -2038,3 +2038,71 @@ html[data-appearance="light"] :is(dialog#modal, dialog.quick-assign) {
   .route-workbench .workbench-flow { grid-template-columns:1fr; }
   .route-workbench .workbench-flow button { min-height:64px; }
 }
+
+/* Dimensional sign-in. Scoped to sign-in, preserving dashboard themes. */
+.easyride-login-3d { min-height:100svh; background:#eef3fd; font-family:Inter,'Segoe UI',sans-serif; }
+.easyride-login-3d .login-brand.easyride-signin-brand { overflow:hidden; justify-content:flex-start; gap:24px; padding:42px clamp(28px,5vw,76px); background:radial-gradient(ellipse at 20% 80%,#164ba966,transparent 60%),radial-gradient(ellipse at 90% 20%,#166d8866,transparent 55%),#08162e; }
+.easyride-login-3d .easyride-signin-brand::before { background:linear-gradient(#6b99ee0c 1px,transparent 1px),linear-gradient(90deg,#6b99ee0c 1px,transparent 1px); background-size:42px 42px; transform:perspective(500px) rotateX(25deg) scale(1.4); }
+.easyride-login-3d .easyride-signin-logo { width:172px; position:relative; z-index:2; }
+.easyride-login-3d .easyride-signin-logo .easyride-logo { border-radius:16px; box-shadow:0 12px 30px #0005; }
+.easyride-login-3d .easyride-signin-title { position:relative; z-index:2; }
+.signin-eyebrow { color:#74ddcf; font-size:10px; font-weight:700; letter-spacing:2.3px; }
+.easyride-login-3d .easyride-signin-title h1 { font-size:clamp(34px,4.3vw,62px); line-height:1.08; letter-spacing:-2px; margin:14px 0; }
+.easyride-login-3d .easyride-signin-title p { color:#b5c8e5; max-width:330px; font-size:14px; }
+.easyride-login-3d .easyride-signin-title li { border-radius:30px; background:#16304a99; font-size:11px; }
+.signin-scene { position:relative; width:100%; max-width:490px; height:290px; margin:10px auto 0; perspective:850px; }
+.scene-platform { position:absolute; inset:55px 22px 25px; border:1px solid #67b6ff88; border-radius:42px; transform:rotateX(53deg) rotateZ(-28deg); background:linear-gradient(135deg,#245a93,#132d58); box-shadow:-10px 16px 0 #0c2449,-18px 30px 0 #071c39,0 50px 60px #0007,inset 0 0 50px #4fa2ff30; }
+.scene-road { position:absolute; inset:28px; border:28px solid #08172f; border-radius:65px; box-shadow:0 0 0 2px #4cb5fe55,inset 0 0 0 2px #4cb5fe55; }
+.scene-road::after { content:''; position:absolute; inset:-15px; border:2px dashed #91b8e5; border-radius:52px; opacity:.7; }
+.scene-building { position:absolute; width:42px; height:58px; background:repeating-linear-gradient(0deg,transparent 0 10px,#7edfff55 10px 13px),linear-gradient(90deg,#276bb5,#123c72); box-shadow:9px 9px 0 #102c54; border:1px solid #5a9bd3; transform:translateY(-30px); }
+.building-one { left:37%; top:36%; height:64px; }
+.building-two { left:52%; top:32%; height:88px; transform:translateY(-52px); }
+.building-three { left:65%; top:47%; height:45px; }
+.scene-car { position:absolute; left:16%; bottom:17%; display:grid; place-items:center; width:70px; height:44px; border-radius:15px; background:linear-gradient(135deg,#adff5f,#18b973); border:2px solid #bfff9c; color:#06382d; box-shadow:0 7px 0 #06613c,0 16px 24px #10e28855; }
+.scene-car .icon { width:36px; height:36px; }
+.scene-pin { position:absolute; right:12%; top:10%; display:grid; place-items:center; width:42px; height:42px; border-radius:50% 50% 50% 4px; background:linear-gradient(135deg,#ffcf67,#ff7844); color:#58240b; box-shadow:0 8px 0 #9c482e; transform:translateY(-18px); }
+.scene-float { position:absolute; display:flex; align-items:center; gap:10px; padding:12px 16px; border:1px solid #8ebfff55; border-radius:14px; color:#fff; background:linear-gradient(130deg,#1b3c62f0,#102744f5); box-shadow:0 16px 32px #0004,inset 0 1px 0 #ffffff22; font-size:12px; font-weight:600; animation:signin-float 6s ease-in-out infinite; }
+.scene-float small { display:block; color:#a9c5e4; font-size:10px; font-weight:400; margin-top:4px; }
+.scene-float > .icon { color:#76ecb4; width:25px; height:25px; }
+.scene-float-top { right:0; top:2px; transform:rotate(3deg); }
+.scene-float-bottom { left:0; bottom:4px; animation-delay:-3s; }
+.scene-orbit { position:absolute; border:1px solid #59a6ff22; width:310px; height:310px; border-radius:50%; top:-15px; left:10%; }
+.orbit-two { width:400px; height:400px; top:-60px; left:0; }
+@keyframes signin-float { 0%,100% { translate:0 0; } 50% { translate:0 -8px; } }
+.login.easyride-login-3d .login-panel { position:relative; align-self:center; margin:36px clamp(20px,4vw,60px); padding:clamp(24px,3vw,44px); border-radius:28px; border:1px solid #fff; background:linear-gradient(150deg,#ffffff,#f5f8ff); box-shadow:0 30px 70px #173a7220,0 8px 0 #dce6f4,inset 0 1px 0 #fff; min-width:0; }
+.easyride-login-3d .login-panel > h2 { font-size:29px; font-weight:750; margin-top:16px; }
+.easyride-login-3d .demo-label { color:#42628b; letter-spacing:1.5px; font-size:10px; }
+.login.easyride-login-3d #login-content { box-shadow:none; background:transparent; padding:20px 0 0; border:0; }
+.easyride-login-3d #login-content label { color:#243e60; font-size:13px; }
+.easyride-login-3d #login-content input:not([type=checkbox]) { background:#f5f8ff; color:#162d4d; border:1px solid #cbd9ed; border-radius:12px; min-height:48px; box-shadow:inset 0 2px 4px #1c3c7010; }
+.easyride-login-3d #login-content input:focus-visible { outline:3px solid #90baff; outline-offset:2px; }
+.easyride-login-3d #login-content input[type=checkbox] { accent-color:#2263df; width:16px; height:16px; vertical-align:middle; }
+.login.easyride-login-3d #login-content .btn.primary { background:linear-gradient(130deg,#327dff,#2350d2); border:1px solid #2a64de; box-shadow:0 5px 0 #193b9c,0 12px 24px #2264df33; border-radius:12px; min-height:48px; margin-bottom:6px; transition:transform .15s,box-shadow .15s; }
+.login.easyride-login-3d #login-content .btn.primary:hover { transform:translateY(-2px); box-shadow:0 7px 0 #193b9c,0 16px 28px #2264df44; }
+.login.easyride-login-3d #login-content .btn.primary:active { transform:translateY(3px); box-shadow:0 2px 0 #193b9c; }
+.login.easyride-login-3d .role-tabs button.selected { background:linear-gradient(135deg,#2e72eb,#214cc1); box-shadow:0 3px 8px #2857b333; border-radius:9px; }
+@media(max-width:760px) {
+  .login.easyride-login-3d { display:flex; flex-direction:column; min-height:100svh; }
+  .easyride-login-3d .login-brand.easyride-signin-brand { padding:22px 24px 28px; gap:16px; width:100%; }
+  .easyride-login-3d .easyride-signin-logo { width:110px; }
+  .easyride-login-3d .easyride-signin-title h1 { font-size:32px; letter-spacing:-1px; margin:10px 0; }
+  .easyride-login-3d .easyride-signin-title p { margin-bottom:0; max-width:250px; font-size:12px; }
+  .easyride-login-3d .easyride-signin-title ul { margin-top:12px; }
+  .easyride-login-3d .signin-scene { display:none; }
+  .login.easyride-login-3d .login-panel { margin:20px 16px 30px; padding:24px; width:calc(100% - 32px); border-radius:22px; }
+  .easyride-login-3d .login-panel > h2 { font-size:24px; margin-top:12px; }
+}
+@media(prefers-reduced-motion:reduce) { .easyride-login-3d *, .easyride-login-3d *::before { animation:none!important; transition:none!important; } }
+.login.easyride-login-3d .login-panel { justify-content:flex-start; }
+.login.easyride-login-3d .role-tabs { margin:16px 0 12px; }
+.login.easyride-login-3d .login-note { margin-top:24px; padding-top:18px; }
+@media(max-width:760px) {
+  .easyride-login-3d .login-brand.easyride-signin-brand { padding:18px 24px 20px; gap:12px; }
+  .easyride-login-3d .easyride-signin-logo { width:88px; }
+  .easyride-login-3d .easyride-signin-title h1 { font-size:28px; }
+  .easyride-login-3d .easyride-signin-title p { display:none; }
+  .login.easyride-login-3d .login-panel { padding:22px; margin-top:16px; }
+  .login.easyride-login-3d .role-tabs { margin:10px 0 4px; }
+  .login.easyride-login-3d #login-content { padding-top:12px; }
+  .login.easyride-login-3d .login-note { margin-top:18px; padding-top:14px; }
+}
