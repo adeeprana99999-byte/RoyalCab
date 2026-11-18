@@ -572,6 +572,7 @@ function dutyRoster(now = fleetNow()) {
     run === undefined ? matchesFleetSource(driver) : (driver.demoRunId || null) === run);
 }
 function dutyLocation({driver,hasLocation,age}) {
+  if (driver.setupPending) return 'Confirm vehicle, seats and accessibility';
   if (['scenario','replay'].includes(driver.locationSource)) return hasLocation ? 'Simulated GPS' : 'Waiting for test position';
   if (driver.locationSource !== 'device') return hasLocation ? 'Sample position' : 'No phone GPS';
   if (driver.status === 'offline' && hasLocation) return 'Last phone position';

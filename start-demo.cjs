@@ -110,11 +110,19 @@ async function start(createApp) {
   if (mongoClient) app.server.once('close',()=>void mongoClient.close());
   if (ownerRecords?.plannerFleet) {
     try {
-      const roster = await ownerRecords.plannerFleet();
+      const verified = await ownerRecords.plannerFleet();
+      const records = await ownerRecords.fleet();
+      const linked = new Map(verified.map(driver => [driver.id, driver]));
+      const roster = records.filter(record => record.kind === 'driver').map(record => {
+        const driver = linked.get('mongo:'+String(record.name).trim().toLowerCase());
+        return driver || {id:'mongo:'+String(record.name).trim().toLowerCase(),name:record.name,
+          vehicle:'Vehicle setup required',seats:0,capabilities:[],driverDisabled:true,
+          rosterManaged:true,setupPending:true};
+      });
       if (roster.length) app.mutate(state => {
         state.drivers.push(...roster.map(driver => ({...driver,status:'offline',locationSource:'device',trackingEnabled:false})));
       });
-      console.log('EASYRIDE linked '+roster.length+' verified imported driver–vehicle pairs to Live Fleet.');
+      console.log('EASYRIDE loaded '+roster.length+' imported drivers in Live Fleet; '+verified.length+' verified vehicle pairs.');
     } catch {
       console.warn('EASYRIDE could not load the imported live roster from MongoDB.');
     }
