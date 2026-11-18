@@ -1418,3 +1418,26 @@ test('saving regular customer driver is owner-only, scoped and automatically use
 test('urgent fallback still gives a newly configured regular driver an exclusive first offer',()=>{
  const now=Date.now(),{s,trip}=sequentialFixture(now);trip.pickupAt=now+300000;D.tick(s,now);const initial=s.offers[0];s.customerPreferences={['ordinary:'+trip.customerPhone]:{driverId:'rank-3'}};D.action(s,trip,'decline',{role:'driver',driverId:initial.driverId,name:'First'},{offerId:initial.id,reason:'On a break'},now+1000);const pending=s.offers.filter(o=>o.status==='pending');assert.equal(pending.length,1);assert.equal(pending[0].driverId,'rank-3');assert.equal(pending[0].mode,'sequential');
 });
+
+test('hosted remember me extends the protected session, expires on time and logout revokes it', async () => {
+  let now=Date.now();
+  const app=createApp({dbPath:':memory:',automaticDispatch:false,clock:()=>now,
+    hostedDemoPassword:'test-workspace-password-long-enough',
+    hostedAccounts:[{role:'owner',phone:'+15555550199',password:'TestPassword123!'}]});
+  await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+app.server.address().port;
+  try {
+    const login=async rememberDevice=>fetch(base+'/api/hosted-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:'owner',phone:'+15555550199',password:'TestPassword123!',rememberDevice})});
+    const normal=await login(false);assert.equal(normal.status,200);assert.match(normal.headers.get('set-cookie'),/Max-Age=43200/);
+    const remembered=await login(true);assert.equal(remembered.status,200);
+    const cookie=remembered.headers.get('set-cookie');assert.match(cookie,/Max-Age=1209600/);assert.match(cookie,/HttpOnly/);assert.match(cookie,/Secure/);
+    const headers={Cookie:cookie.split(';')[0]};
+    now+=13*24*60*60*1000;
+    assert.equal((await (await fetch(base+'/api/session',{headers})).json()).user.role,'owner');
+    assert.equal((await fetch(base+'/api/logout',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:'{}'})).status,200);
+    assert.equal((await (await fetch(base+'/api/session',{headers})).json()).user,null);
+    const fresh=await login(true);now+=15*24*60*60*1000;
+    assert.equal((await (await fetch(base+'/api/session',{headers:{Cookie:fresh.headers.get('set-cookie').split(';')[0]}})).json()).user,null);
+  } finally {app.close();await new Promise(resolve=>app.server.close(resolve));}
+});
+

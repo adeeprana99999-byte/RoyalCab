@@ -286,8 +286,10 @@ function renderLogin() {
 function loginContent() {
   if (config.localPhoneLogin || config.hostedPhoneLogin) {
     const samples={owner:'+15550103001',driver:'+15550101001',customer:'+15550102001'};
-    return '<form id="demo-phone-login"><label>Mobile number<input name="phone" type="tel" autocomplete="username" required></label>'+
+    let savedPhone=''; try { savedPhone=localStorage.getItem('easyride-login-phone-'+loginTab)||''; } catch {}
+    return '<form id="demo-phone-login"><label>Mobile number<input name="phone" type="tel" autocomplete="username" value="'+esc(savedPhone)+'" required></label>'+ 
       '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>'+
+      (config.hostedPhoneLogin?'<label><input type="checkbox" name="rememberDevice" checked> Remember me on this device for 14 days</label>':'')+
       '<button class="btn primary full">Sign in</button>'+(config.localPhoneLogin?'<p class="help">Demo mobile: '+samples[loginTab]+' · Password: Ride1234</p>':'')+'</form>';
   }
   if (config.mode === 'pilot') return '<form id="pilot-login">' +
@@ -320,7 +322,12 @@ function bindLogin() {
   if(phoneLogin) phoneLogin.onsubmit=event=>{
     event.preventDefault();
     const credentials=Object.fromEntries(new FormData(phoneLogin));
-    run(async()=>enter((await api(config.hostedPhoneLogin?'/api/hosted-login':'/api/auth/demo-password',{role:loginTab,...credentials})).user));
+    credentials.rememberDevice=phoneLogin.elements.rememberDevice?.checked===true;
+    run(async()=>{
+      const result=await api(config.hostedPhoneLogin?'/api/hosted-login':'/api/auth/demo-password',{role:loginTab,...credentials});
+      try { if(credentials.rememberDevice) localStorage.setItem('easyride-login-phone-'+loginTab,credentials.phone); else localStorage.removeItem('easyride-login-phone-'+loginTab); } catch {}
+      await enter(result.user);
+    });
   };
   if ($('#forget-workspace-device')) $('#forget-workspace-device').onclick=()=>run(async()=>{
     await api('/api/preview/forget',{});

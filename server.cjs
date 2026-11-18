@@ -382,10 +382,11 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
     const row = db.prepare('SELECT user FROM sessions WHERE token=? AND expires>?').get(key, clock());
     return row ? JSON.parse(row.user) : null;
   }
-  function signIn(res, user) {
+  function signIn(res, user, rememberDevice = false) {
+    const sessionAge = rememberDevice ? 14 * 24 * 60 * 60 : 12 * 60 * 60;
     const token = crypto.randomBytes(32).toString('hex');
-    db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(hash(token), JSON.stringify(user), clock() + 12 * 3600000);
-    res.setHeader('Set-Cookie', `prolift=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${pilot||hostedDemo?'; Secure':''}`);
+    db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(hash(token), JSON.stringify(user), clock() + sessionAge * 1000);
+    res.setHeader('Set-Cookie', `prolift=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${sessionAge}${pilot||hostedDemo?'; Secure':''}`);
     return user;
   }
   function throttle(key, max, ms) {
@@ -546,7 +547,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if (hostedPhoneLogin && url.pathname==='/api/hosted-login' && req.method==='POST') {
         throttle('hosted-login:'+req.socket.remoteAddress,12,60000);
-        const {role,phone,password}=await body(req);
+        const {role,phone,password,rememberDevice}=await body(req);
         const digits=String(phone??'').replace(/[\s()+.-]/g,'');
         const mobile='+'+(digits.length===10?'1'+digits:digits);
         const account=accounts.get(mobile);
@@ -562,7 +563,7 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
         if (role==='driver' && !driver) return json(res,401,{error:'This driver account is unavailable.'});
         const identity=role==='driver'?{driverId:driver.id,name:driver.name}:
           role==='customer'?{phone:mobile,name:account.name||'Customer'}:{id:'owner:'+mobile,name:account.name||'Fleet owner'};
-        return json(res,200,{user:signIn(res,{role,...identity,hostedPhone:true})});
+        return json(res,200,{user:signIn(res,{role,...identity,hostedPhone:true},rememberDevice===true)});
       }
       if (url.pathname === '/api/auth/demo-password' && req.method === 'POST') {
         if (hostedDemo) return json(res,404,{error:'Local test sign-in is unavailable.'});
