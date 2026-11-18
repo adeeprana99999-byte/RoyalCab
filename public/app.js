@@ -134,6 +134,10 @@ function applySnapshot(r, explicit=false) {
     if (explicit && user.role === 'driver' && $('dialog[open]')) return;
     if (!explicit && tab==='trips' && mongoTripsEnabled()) {
       const visibleRides = new Map((mongoTrips?.rides||[]).map(ride=>[ride.id,ride]));
+      document.querySelectorAll('[data-group-rides]').forEach(element=>{
+        const rides=JSON.parse(element.dataset.groupRides).map(id=>visibleRides.get(id)).filter(Boolean);
+        if(rides.length) element.innerHTML=mongoGroupStatus(rides);
+      });
       document.querySelectorAll('[data-mongo-trip-id]').forEach(row=>{
         const ride=visibleRides.get(row.dataset.mongoTripId);
         const cell=row.querySelector('[data-mongo-trip-stage]');
@@ -1217,14 +1221,37 @@ function bindTripPreferences() {
 }
 let mongoTrips, mongoTripRequest, mongoTripQuery='', mongoTripFilter='all', mongoTripPage=1;
 let mongoTripPageSize=500;
+let mongoTripWrap=true, mongoTripWidths={};
+try {
+  mongoTripWrap=localStorage.getItem('easyride-trip-wrap')!=='false';
+  mongoTripWidths=JSON.parse(localStorage.getItem('easyride-trip-widths')||'{}');
+  if(!mongoTripWidths || Array.isArray(mongoTripWidths) || typeof mongoTripWidths!=='object') mongoTripWidths={};
+} catch {}
 const expandedMongoTrips=new Set();
-function mongoTripsEnabled() { return !!config.mongoOwnerRecords || mongoOwnerFleet && user?.role==='owner'; }
-const mongoSheetColumns = ["Driver","Trip Id","Status","Rider's Name","Level Of Service","PU - Schedule Time","DO - Schedule Time","PU - Full Street","PU - City","DO - Full Street","DO - City","Escorts","PU - Actual Time","DO - Actual Time","Miles","Age","Trip Source","Cancellation Reason Code","Rejection Reason Code","PU Ship To","DO Ship To"];
+function mongoTripsEnabled() { return !!config.mongoOwnerRecords; }
+const mongoSheetColumns = ["Driver","Trip Id","Status","Rider's Name","Level Of Service","PU - Schedule Time","DO - Schedule Time","PU - Full Street","PU - City","DO - Full Street","DO - City","Escorts","PU - Actual Time","DO - Actual Time","Miles","Age","Trip Source","Cancellation Reason Code","Rejection Reason Code","PU Ship To","DO Ship To","Actual Ride Duration"];
+const mongoColumnLabels={"Rider's Name":"RIDER Name","PU - Schedule Time":"Time","PU - Full Street":"Pickup","DO - Schedule Time":"Drop off Time","DO - Full Street":"Destination"};
 let mongoSelectedColumns = ["Trip Id","Status","Rider's Name","PU - Schedule Time","PU - Full Street","DO - Schedule Time","DO - Full Street","Miles"];
 try {
   const saved=JSON.parse(localStorage.getItem('easyride-trip-columns'));
   if(Array.isArray(saved) && saved.length && saved.every(name=>mongoSheetColumns.includes(name))) mongoSelectedColumns=[...new Set(saved)];
 } catch {}
+if(!mongoSelectedColumns.includes('Trip Id')) mongoSelectedColumns.unshift('Trip Id');
+function actualRideMinutes(start,end) {
+  if (!start || !end) return null;
+  const elapsed=(new Date(end).getTime()-new Date(start).getTime())/60000;
+  return Number.isFinite(elapsed) && elapsed>=0 ? Math.round(elapsed*10)/10 : null;
+}
+function mongoColumnOptions() {
+  const ordered=[...mongoSelectedColumns,...mongoSheetColumns.filter(name=>!mongoSelectedColumns.includes(name))];
+  return ordered.map(name=>{
+    const position=mongoSelectedColumns.indexOf(name);
+    return '<div class="mongo-column-option"><label><input type="checkbox" data-trip-column="'+esc(name)+'" '+
+      (position>=0?'checked ':'')+(name==='Trip Id'?'disabled ':'')+'>'+esc(mongoColumnLabels[name]||name)+'</label>'+
+      (position>=0?'<span><button type="button" data-column-move="-1" data-column-name="'+esc(name)+'" aria-label="Move '+esc(name)+' up" '+(position===0?'disabled':'')+'>↑</button>'+
+      '<button type="button" data-column-move="1" data-column-name="'+esc(name)+'" aria-label="Move '+esc(name)+' down" '+(position===mongoSelectedColumns.length-1?'disabled':'')+'>↓</button></span>':'')+'</div>';
+  }).join('');
+}
 function mongoTripsPage() {
   return '<section class="bookings-panel" id="mongo-trips">'+
     '<input class="mongo-trip-search" type="search" id="mongo-trip-search" aria-label="Search trips" value="'+esc(mongoTripQuery)+'" placeholder="Search by ride ID or city">'+
@@ -1234,20 +1261,30 @@ function mongoTripsPage() {
     '<label>Review status<select id="mongo-trip-filter"><option value="all">All rides</option>'+
     '<option value="review">Owner review</option><option value="ready">Assigned in replay plan</option>'+
     '<option value="missing">Pickup time missing</option></select></label></details>'+
-    '<details class="mongo-column-picker"><summary>Columns</summary><div aria-label="Trip columns">'+mongoSheetColumns.map(name=>
-      '<label><input type="checkbox" data-trip-column="'+esc(name)+'" '+(mongoSelectedColumns.includes(name)?'checked':'')+
-      '>'+esc(name)+'</label>').join('')+'</div></details>'+
+    '<details class="mongo-column-picker"><summary>Columns</summary><div aria-label="Trip columns">'+mongoColumnOptions()+'</div></details>'+
+    '<label class="mongo-wrap-control"><input type="checkbox" id="mongo-trip-wrap" '+(mongoTripWrap?'checked':'')+'>Wrap text</label>'+
     '<button type="button" class="btn small" id="reload-mongo-trips">Refresh</button>'+
     '<button type="button" class="btn primary small" id="export-mongo-trips" disabled>Export CSV</button></div>'+
     '<p id="mongo-trips-status" role="status">Loading MongoDB rides…</p><div id="mongo-trips-results"></div></section>';
 }
 function mongoTripStage(ride) {
+  const sourceStatus=String(ride.sourceStatus||ride.status||'').trim().toLowerCase();
+  const known={'completed':'completed','dropoff completed':'completed','cancelled':'cancelled','canceled':'cancelled'};
+  if(known[sourceStatus]) return badge(known[sourceStatus]);
   const replay=state?.lgtcReplay;
   const simulated=replay?.serviceDate===ride.date && state.trips.find(
     trip=>trip.demoRunId===replay.runId && trip.reference===ride.reference);
   if (['completed','cancelled'].includes(ride.status)) return badge(ride.status);
   if (simulated) return badge(simulated.status)+' <small>Replay</small>';
-  return '<span class="badge">Imported</span>';
+  return '<span class="badge">'+esc(ride.sourceStatus||'Status unavailable')+'</span>';
+}
+function mongoGroupStatus(rides) {
+  const stages=rides.map(mongoTripStage);
+  if(stages.every(stage=>stage===stages[0])) {
+    return stages[0]+'<small class="mongo-status-legs">'+esc(rides.map(ride=>ride.leg).join(' / '))+'</small>';
+  }
+  return rides.map((ride,index)=>'<span class="mongo-trip-leg-status"><small>'+esc(ride.leg)+
+    '</small>'+stages[index]+'</span>').join('');
 }
 async function openMongoTrip(id) {
   const {trip}=await api('/api/owner/mongo-trip?id='+encodeURIComponent(id));
@@ -1328,21 +1365,27 @@ function bindMongoTrips() {
     const cells=(ride,status,review)=>{
       const linked=state?.trips.find(trip=>trip.reference===ride.reference);
       const driver=state?.drivers.find(driver=>driver.id===linked?.driverId);
+      const events=(state?.events||[]).filter(event=>event.tripId===linked?.id);
+      const duration=ride.actualDurationMinutes ?? actualRideMinutes(
+        ride.sourceColumns?.['PU - Actual Time'] || events.find(event=>event.type==='trip.onboard')?.at,
+        ride.sourceColumns?.['DO - Actual Time'] || linked?.completedAt);
       const values={
+        ...ride.sourceColumns,
         Driver:driver?.name,Status:status,"Rider's Name":ride.passenger,
         "Level Of Service":ride.serviceCode,"PU - Schedule Time":ride.pickup,
         "DO - Schedule Time":ride.dropoff,"PU - Full Street":address(ride.pickupAddress),
         "PU - City":ride.from,"DO - Full Street":address(ride.dropoffAddress),"DO - City":ride.to,
+        "Actual Ride Duration":duration===null?'—':duration+' min',
         Miles:ride.miles,"Trip Source":ride.program
       };
-      return columns.slice(1).map(name=>'<td data-label="'+esc(name)+'">'+
+      return columns.slice(1).map(name=>'<td data-label="'+esc(mongoColumnLabels[name]||name)+'">'+
         (name==='Status'?status+(review?'<small class="mongo-trip-review">'+esc(review)+'</small>':''):
-          esc(values[name]??'—'))+'</td>').join('');
+          esc(values[name]??ride.sourceColumns?.[name]??'—'))+'</td>').join('');
     };
     const legRow=(ride,child=false)=>{
       const review=reviewFor(ride);
-      return '<tr class="'+(child?'mongo-trip-leg':'')+'" data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button">'+
-        (child&&ride.leg?'Leg '+esc(ride.leg)+' · ':'')+esc(ride.reference)+'</button></td>'+
+      return '<tr class="'+(child?'mongo-trip-leg':'')+'" data-mongo-trip-id="'+esc(ride.id)+'"><td><button class="text-btn" type="button" title="'+esc(ride.reference)+'">'+
+        (child&&ride.leg?'Leg '+esc(ride.leg):esc(ride.reference))+'</button></td>'+
         cells(ride,'<span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span>',
           review?.join(', ') || (ride.date===mongoTrips.plannedDate?'Assigned in replay plan':''))+'</tr>';
     };
@@ -1352,9 +1395,7 @@ function bindMongoTrips() {
       const [first]=rides;
       const open=expandedMongoTrips.has(key);
       const pending=rides.filter(reviewFor).length;
-      const statuses=rides.map(ride=>
-        '<span class="mongo-trip-leg-status" data-mongo-trip-id="'+esc(ride.id)+'"><small>'+esc(ride.leg||'Leg')+
-        '</small> <span data-mongo-trip-stage>'+mongoTripStage(ride)+'</span></span>').join(' ');
+      const statuses='<span class="mongo-group-status" data-group-rides="'+esc(JSON.stringify(rides.map(ride=>ride.id)))+'">'+mongoGroupStatus(rides)+'</span>';
       const parent='<tr class="mongo-trip-group"><td><button class="text-btn" type="button" aria-expanded="'+open+
         '" data-mongo-trip-group="'+esc(key)+'">'+(open?'▾ ':'▸ ')+esc(first.group)+
         ' <small>· '+rides.length+' legs</small></button></td>'+
@@ -1362,10 +1403,71 @@ function bindMongoTrips() {
       return parent+(open?rides.map(ride=>legRow(ride,true)).join(''):'');
     }).join('');
     results.innerHTML=rows?'<div class="table-scroll"><table><thead><tr>'+
-      columns.map(label=>'<th scope="col">'+label+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      columns.map(label=>'<th scope="col">'+esc(mongoColumnLabels[label]||label)+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
       '<nav class="pagination" aria-label="MongoDB trips pages"><button class="btn small" data-mongo-trip-step="-1" '+(mongoTripPage===1?'disabled':'')+
       '>Previous</button><span>Page '+mongoTripPage+' of '+pages+'</span><button class="btn small" data-mongo-trip-step="1" '+
       (mongoTripPage===pages?'disabled':'')+'>Next</button></nav>':'';
+    reorderRows();
+    const table=results.querySelector('table');
+    if(table) {
+      table.classList.toggle('mongo-wrap-text',mongoTripWrap);
+      const group=document.createElement('colgroup');
+      const widths=mongoSelectedColumns.map(name=>{
+        const saved=Number(mongoTripWidths[name]);
+        return Number.isFinite(saved)&&saved>=90&&saved<=700?saved:
+          /Street|Ship To/.test(name)?230:name==='Trip Id'?220:150;
+      });
+      const setWidths=()=>{
+        [...group.children].forEach((col,index)=>col.style.width=widths[index]+'px');
+        table.style.width=widths.reduce((total,width)=>total+width,0)+'px';
+      };
+      widths.forEach(()=>group.append(document.createElement('col')));
+      table.prepend(group);
+      setWidths();
+      table.querySelectorAll('th').forEach((header,index)=>{
+        const handle=document.createElement('button');
+        handle.type='button';
+        handle.className='mongo-column-resize';
+        const name=mongoSelectedColumns[index];
+        handle.setAttribute('aria-label','Resize '+(mongoColumnLabels[name]||name)+' column');
+        const saveWidth=()=>{try{localStorage.setItem('easyride-trip-widths',JSON.stringify(mongoTripWidths));}catch{}};
+        const resize=width=>{
+          widths[index]=Math.max(90,Math.min(700,width));
+          mongoTripWidths[name]=widths[index];
+          setWidths();
+        };
+        handle.onpointerdown=event=>{
+          if(event.button!==0)return;
+          event.preventDefault();
+          const initialX=event.clientX, initialWidth=widths[index];
+          handle.setPointerCapture(event.pointerId);
+          handle.onpointermove=move=>resize(initialWidth+move.clientX-initialX);
+          const finish=()=>{
+            handle.onpointermove=null;
+            handle.onpointerup=handle.onpointercancel=null;
+            saveWidth();
+          };
+          handle.onpointerup=handle.onpointercancel=finish;
+        };
+        handle.onkeydown=event=>{
+          if(!['ArrowLeft','ArrowRight'].includes(event.key))return;
+          event.preventDefault();
+          resize(widths[index]+(event.key==='ArrowRight'?10:-10));
+          saveWidth();
+        };
+        header.append(handle);
+      });
+    }
+  };
+  const reorderRows=()=>{
+    const order=['Trip Id',...mongoSelectedColumns.filter(name=>name!=='Trip Id')];
+    results.querySelectorAll('tr').forEach(row=>{
+      const cells=[...row.children];
+      for(const name of mongoSelectedColumns) {
+        const cell=cells[order.indexOf(name)];
+        if(cell) row.append(cell);
+      }
+    });
   };
   const load=async()=>{
     try {
@@ -1376,13 +1478,35 @@ function bindMongoTrips() {
   };
   search.oninput=()=>{mongoTripQuery=search.value;mongoTripPage=1;show();};
   filter.onchange=()=>{mongoTripFilter=filter.value;mongoTripPage=1;show();};
-  panel.querySelectorAll('[data-trip-column]').forEach(input=>input.onchange=()=>{
-    const chosen=[...panel.querySelectorAll('[data-trip-column]:checked')].map(item=>item.dataset.tripColumn);
-    if(!chosen.length){input.checked=true;return;}
-    mongoSelectedColumns=chosen;
-    try {localStorage.setItem('easyride-trip-columns',JSON.stringify(chosen));} catch {}
+  $('#mongo-trip-wrap').onchange=event=>{
+    mongoTripWrap=event.target.checked;
+    try {localStorage.setItem('easyride-trip-wrap',String(mongoTripWrap));} catch {}
     show();
-  });
+  };
+  const columnList=panel.querySelector('[aria-label="Trip columns"]');
+  const saveColumns=()=>{
+    try {localStorage.setItem('easyride-trip-columns',JSON.stringify(mongoSelectedColumns));} catch {}
+    columnList.innerHTML=mongoColumnOptions();
+    show();
+  };
+  columnList.onchange=event=>{
+    const input=event.target.closest('[data-trip-column]');
+    if(!input) return;
+    const name=input.dataset.tripColumn;
+    mongoSelectedColumns=input.checked?[...mongoSelectedColumns,name]:mongoSelectedColumns.filter(column=>column!==name);
+    saveColumns();
+  };
+  columnList.onclick=event=>{
+    const button=event.target.closest('[data-column-move]');
+    if(!button) return;
+    const current=mongoSelectedColumns.indexOf(button.dataset.columnName);
+    const next=current+Number(button.dataset.columnMove);
+    if(current<0 || next<0 || next>=mongoSelectedColumns.length) return;
+    [mongoSelectedColumns[current],mongoSelectedColumns[next]]=[mongoSelectedColumns[next],mongoSelectedColumns[current]];
+    saveColumns();
+    [...columnList.querySelectorAll('[data-column-move]')].find(item=>
+      item.dataset.columnName===button.dataset.columnName && item.dataset.columnMove===button.dataset.columnMove)?.focus();
+  };
   $('#mongo-trip-page-size').onchange=event=>{mongoTripPageSize=Number(event.target.value);mongoTripPage=1;show();};
   results.onclick=event=>{
     const button=event.target.closest('[data-mongo-trip-step]');
@@ -1481,7 +1605,7 @@ function importsPage() {
   ];
   const flow = '<ol class="workbench-flow" aria-label="Ride planning workflow">'+steps.map(([symbol,label,text,action],index)=>
     '<li'+(index===0?' aria-current="step"':'')+'><button type="button" '+action+'><span class="workbench-step-icon" aria-hidden="true">'+icon(symbol)+'</span><span><strong>'+label+'</strong><small>'+text+'</small></span></button></li>').join('')+'</ol>';
-  return title+flow+(hasSchedule?lgtcPreview(schedules):schedules);
+  return '<div class="route-workbench">'+title+flow+(hasSchedule?lgtcPreview(schedules):schedules)+'</div>';
 }
 function previewImport() {
   const invalid = batch.rows.filter(r => r.errors.length).length;
@@ -1743,7 +1867,7 @@ function driversPage() {
       '<button type="button" data-fleet-page-tab="'+key+'" aria-pressed="'+(fleetPageTab===key)+'" class="'+(fleetPageTab===key?'selected':'')+'">'+label+'</button>').join('')+'</nav>';
   const title = heading('YOUR TEAM','Drivers &amp; vehicles','Availability, vehicles, and current work in one place.');
   if (fleetPageTab === 'records') return title+tabs+importedFleetPanel();
-  const roster = ProLiftBoard.fleet(state,lastSnapshotAt || Date.now()).filter(({driver})=>!driver.demoRunId); return title + tabs + `<section class="panel fleet-roster"><h2>Live dispatch roster</h2><div class="dispatch-roster-counts"><span><strong>${roster.length}</strong> Drivers</span><span><strong>${roster.filter(({status,driver})=>status==='available'&&!driver.driverDisabled&&!driver.vehicleDisabled).length}</strong> Available</span><span><strong>${roster.filter(({driver})=>driver.status==='busy').length}</strong> On ride</span><span><strong>${roster.filter(({driver})=>driver.status==='offline').length}</strong> Offline</span></div><label>Find a driver or vehicle <input id="fleet-roster-search" type="search"></label><p id="fleet-roster-empty" hidden>No matching drivers.</p><div class="fleet-roster-list">${roster.map(item => { const {driver:d,trip:t} = item; return `<details class="fleet-roster-row" data-live-roster-id="${esc(d.id)}"><summary>${fleetDriverAvatar(d)}<strong>${esc(d.name)}</strong><span>${esc([d.vehicle,d.plate].filter(Boolean).join(' · '))}</span>${badge(d.driverDisabled||d.vehicleDisabled?'disabled':d.status)}<small>${esc(dutyLocation(item))}${t?' · '+esc(t.reference):''}</small></summary><div class="fleet-roster-detail"><div class="specs"><span>${d.seats} passenger seats</span><button class="btn small" data-capacity="${d.id}">Set 4 / 7 seats</button><span>${d.capabilities.length ? 'Wheelchair accessible' : 'Standard vehicle'}</span></div><div class="driver-assignment">${t ? `<small>CURRENT TRIP</small><button class="text-btn" data-detail="${t.id}">${esc(t.reference)} ${icon('arrow')}</button><p>${esc(t.pickup)}</p>` : '<small>NO ACTIVE TRIP</small><p>No ride assigned.</p>'}</div><small class="muted">Last location ${Number.isFinite(d.lastLocationAt) ? time(d.lastLocationAt) : "unavailable"}</small><button class="btn small" data-driver-day="${esc(d.id)}">Driver day</button><button class="btn small" data-driver-documents="${esc(d.id)}">Driver documents</button>${user.role === 'owner' ? ['driver','vehicle'].map(kind=>`<button class="btn small" data-fleet-kind="${kind}" data-fleet-driver="${esc(d.id)}" data-fleet-disabled="${!d[kind+'Disabled']}">${d[kind+'Disabled']?'Enable':'Disable'} ${kind}</button>`).join('') : ''}</div></details>`; }).join('')}</div></section>`; }
+  const roster = ProLiftBoard.fleet(state,lastSnapshotAt || Date.now()).filter(({driver})=>!driver.demoRunId); return title + tabs + `<section class="panel fleet-roster"><h2>Live dispatch roster</h2><div class="dispatch-roster-counts"><span><strong>${roster.length}</strong> Drivers</span><span><strong>${roster.filter(({status,driver})=>status==='available'&&!driver.driverDisabled&&!driver.vehicleDisabled).length}</strong> Available</span><span><strong>${roster.filter(({driver})=>driver.status==='busy').length}</strong> On ride</span><span><strong>${roster.filter(({driver})=>driver.status==='offline').length}</strong> Offline</span></div><label>Find a driver or vehicle <input id="fleet-roster-search" type="search"></label><p id="fleet-roster-empty" hidden>No matching drivers.</p><div class="fleet-roster-list">${roster.map(item => { const {driver:d,trip:t} = item; return `<details class="fleet-roster-row" data-live-roster-id="${esc(d.id)}"><summary>${fleetDriverAvatar(d)}<strong>${esc(d.name)}</strong><span>${esc([d.vehicle,d.plate].filter(Boolean).join(' · '))}</span>${badge(d.driverDisabled||d.vehicleDisabled?'disabled':d.status)}<small>${esc(dutyLocation(item))}${t?' · '+esc(t.reference):''}</small></summary><div class="fleet-roster-detail"><div class="specs"><span>${d.seats} passenger seats</span><button class="btn small" data-capacity="${d.id}">Vehicle requirements</button><span>${d.capabilities.length ? 'Wheelchair accessible' : 'Standard vehicle'}</span></div><div class="driver-assignment">${t ? `<small>CURRENT TRIP</small><button class="text-btn" data-detail="${t.id}">${esc(t.reference)} ${icon('arrow')}</button><p>${esc(t.pickup)}</p>` : '<small>NO ACTIVE TRIP</small><p>No ride assigned.</p>'}</div><small class="muted">Last location ${Number.isFinite(d.lastLocationAt) ? time(d.lastLocationAt) : "unavailable"}</small><button class="btn small" data-driver-day="${esc(d.id)}">Driver day</button><button class="btn small" data-driver-documents="${esc(d.id)}">Driver documents</button>${user.role === 'owner' ? ['driver','vehicle'].map(kind=>`<button class="btn small" data-fleet-kind="${kind}" data-fleet-driver="${esc(d.id)}" data-fleet-disabled="${!d[kind+'Disabled']}">${d[kind+'Disabled']?'Enable':'Disable'} ${kind}</button>`).join('') : ''}</div></details>`; }).join('')}</div></section>`; }
 function activityPage() { return heading('ACCOUNTABILITY', 'Activity log', 'Assignments, driver drops, trip updates, and import activity.') + `<section class="panel">${state.events.length ? state.events.slice(0, 100).map(e => `<div class="activity-row">${icon(e.type.includes('reassignment') ? 'flag' : 'clock')}<div><strong>${esc(e.type.replace(/[._]/g, ' '))}</strong><span>${esc(e.reference || '')} · ${esc(e.actor)}</span><small>${esc(e.detail)}</small></div><time>${date(e.at)} · ${time(e.at)}</time></div>`).join('') : '<div class="empty"><p>Activity appears as your team works.</p></div>'}</section>`; }
 function pairedRideLabel(trip) {
   if (!trip.lgtc?.pairedReference) return '';
@@ -3055,7 +3179,7 @@ function bindActions() {
   if($('#customer-ride-choice'))$('#customer-ride-choice').onchange=e=>{selectedCustomerTrip=e.target.value;render();};
   if($('#next-customer-ride'))$('#next-customer-ride').onclick=()=>{selectedCustomerTrip=null;render();};
   if($('#design-vehicle-plan'))$('#design-vehicle-plan').onclick=()=>run(showVehiclePlan);
-  document.querySelectorAll('[data-capacity]').forEach(b=>b.onclick=()=>{const d=state.drivers.find(d=>d.id===b.dataset.capacity);modal('<h2>Vehicle passenger capacity</h2><p>'+esc(d.name)+' · '+esc(d.vehicle)+'. Seats exclude the driver. Only choose the actual passenger capacity.</p><label>Passenger seats<select id="car-capacity"><option value="4">4 seats</option><option value="7">7 seats</option></select></label><button class="btn primary" id="save-capacity">Save capacity</button>');$('#car-capacity').value=String(d.seats===7?7:4);$('#save-capacity').onclick=()=>run(async()=>{await api('/api/vehicle-capacity',{driverId:d.id,seats:+$('#car-capacity').value});$('#modal').close();await refresh();toast('Vehicle capacity updated.');});});
+  document.querySelectorAll('[data-capacity]').forEach(b=>b.onclick=()=>{const d=state.drivers.find(d=>d.id===b.dataset.capacity);modal('<h2>Vehicle passenger capacity</h2><p>'+esc(d.name)+' · '+esc(d.vehicle)+'. Seats exclude the driver. Only choose the actual passenger capacity.</p><label>Passenger seats<select id="car-capacity"><option value="4">4 seats</option><option value="7">7 seats</option></select></label><label>Wheelchair accessible<select id="car-accessible"><option value="no">No</option><option value="yes">Yes</option></select></label><button class="btn primary" id="save-capacity">Save vehicle requirements</button>');$('#car-capacity').value=String(d.seats===7?7:4);$('#car-accessible').value=d.capabilities.includes('wheelchair')?'yes':'no';$('#save-capacity').onclick=()=>run(async()=>{await api('/api/vehicle-capacity',{driverId:d.id,seats:+$('#car-capacity').value,accessible:$('#car-accessible').value==='yes'});$('#modal').close();await refresh();toast('Vehicle capacity updated.');});});
   document.querySelectorAll('[data-priority-page]').forEach(b=>b.onclick=()=>{priorityPages[b.dataset.priorityPage]=+b.dataset.page;render();});
   document.querySelectorAll('[data-dispatch-view]').forEach(b=>b.onclick=()=>{dispatchView=b.dataset.dispatchView;mapPriorityFilter=dispatchView;dispatchPage=1;render();fitPriorityMap();});
   if($('#dispatch-search')) $('#dispatch-search').onsubmit=e=>{

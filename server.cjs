@@ -1325,7 +1325,15 @@ function createApp({ dbPath, clock = () => Date.now(), automaticDispatch = true,
       }
       if(url.pathname==='/api/vehicle-capacity'&&req.method==='POST'){
         requireRole(user,'owner');const b=await body(req);if(![4,7].includes(b.seats))throw Error('Choose 4 or 7 passenger seats');
-        mutate(s=>{const d=s.drivers.find(d=>d.id===b.driverId);if(!d)throw Error('Driver not found');if(s.trips.some(t=>t.driverId===d.id&&!['completed','cancelled'].includes(t.status))||s.offers.some(o=>o.driverId===d.id&&o.status==='pending'))throw Error('Finish active work and offers before changing capacity');if(s.trips.some(t=>t.reservedDriverId===d.id&&t.passengers>b.seats))throw Error('This capacity is too small for a reserved ride');d.seats=b.seats;D.event(s,'vehicle.capacity_updated',null,user.name,d.name+' · '+b.seats+' passenger seats');});publish();return json(res,200,{ok:true});
+        if(b.accessible!==undefined && typeof b.accessible!=='boolean') throw Error('Choose wheelchair accessibility.');
+        if(b.accessible!==undefined) {
+          const state=load();
+          if(state.trips.some(trip=>trip.reservedDriverId===b.driverId && !['completed','cancelled'].includes(trip.status) &&
+            trip.requirements?.includes('wheelchair') && !b.accessible)) {
+            throw Error('A reserved ride requires a wheelchair-accessible vehicle. Reassign it before changing accessibility.');
+          }
+        }
+        mutate(s=>{const d=s.drivers.find(d=>d.id===b.driverId);if(!d)throw Error('Driver not found');if(s.trips.some(t=>t.driverId===d.id&&!['completed','cancelled'].includes(t.status))||s.offers.some(o=>o.driverId===d.id&&o.status==='pending'))throw Error('Finish active work and offers before changing capacity');if(s.trips.some(t=>t.reservedDriverId===d.id&&t.passengers>b.seats))throw Error('This capacity is too small for a reserved ride');d.seats=b.seats;if(b.accessible!==undefined)d.capabilities=[...d.capabilities.filter(value=>value!=='wheelchair'),...(b.accessible?['wheelchair']:[])];D.event(s,'vehicle.capacity_updated',null,user.name,d.name+' · '+b.seats+' passenger seats');});publish();return json(res,200,{ok:true});
       }
       if(url.pathname==='/api/vehicle-plan'&&req.method==='POST'){
         requireRole(user,'owner');const b=await body(req);if(!['preview','apply'].includes(b.action))throw Error('Choose preview or apply');

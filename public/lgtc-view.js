@@ -65,6 +65,8 @@ function lgtcRows(rows) {
     (r.review?.start != null ? '<small>Time confirmed</small>' : '') + '</td><td>' + esc(r.from || 'Unknown') + ' → ' + esc(r.to || 'Unknown') + '</td><td>' +
     esc(r.reasons?.join(' · ') || (r.seats ? r.seats + ' seats' : [...r.issues, ...(r.hasNotes && !r.review?.notesReviewed ? ['Source notes to review'] : [])].join(' · ') || 'Time present')) +
     (r.assignment ? '<small><strong>' + esc(r.assignment) + '</strong></small>' : '') +
+    (r.seats ? '<small>Required · '+esc(r.seats)+' passenger seats · '+
+      (r.mode==='accessible'?'Wheelchair accessible':'Standard vehicle')+'</small>' : '') +
     (r.alternateReason ? '<small>' + esc(r.alternateReason) + '</small>' : '') +
     (r.regularDriver ? '<small>Regular driver · ' + esc(r.regularDriver.name) + '</small>' : '') +
     lgtcLiveBadge(dispatched.get('LGTC-' + r.program + '-' + r.serviceDate + '-' + r.reference)) +
@@ -319,8 +321,7 @@ function lgtcPlanner(info) {
   const roster = batch.roster || [];
   const choices = roster.map(d=>'<label class="lgtc-check"><input type="checkbox" name="driverIds" value="' + esc(d.id) + '" ' +
     (settings?.driverIds?.includes(d.id) ? 'checked' : '') + '><span><strong>' + esc(d.name) + '</strong><small>' +
-    esc(d.vehicle) + ' · ' + d.seats + ' seats' + (d.accessible ? ' · Accessible' : '') +
-    (d.imported ? ' · Imported fleet' : '') + '</small><small>' +
+    esc(d.vehicle) + ' · ' + d.seats + ' seats' + (d.accessible ? ' · Accessible' : '') + (d.imported ? ' · Imported fleet' : '') + '</small><small>' +
     (d.availability?.[info.serviceDate]?.unavailable ? 'Unavailable that day' :
       d.availability?.[info.serviceDate] ? lgtcInputTime(d.availability[info.serviceDate].start) + '–' +
         lgtcInputTime(d.availability[info.serviceDate].end) + ' ET' : 'No shift entered') + '</small></span></label>').join('');
